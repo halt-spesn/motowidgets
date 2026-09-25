@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Top-Left Widget Tile -->
+    <path
+        android:fillColor="#0A84FF"
+        android:pathData="M 31,27 L 46,27 A 5,5 0 0 1 51,32 L 51,46 A 5,5 0 0 1 46,51 L 31,51 A 5,5 0 0 1 26,46 L 26,32 A 5,5 0 0 1 31,27 Z" />
+    <!-- Dial / Ring in Top-Left -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 38.5,34 A 5,5 0 1 0 38.5,44 A 5,5 0 1 0 38.5,34 Z M 38.5,36.5 A 2.5,2.5 0 1 1 38.5,41.5 A 2.5,2.5 0 1 1 38.5,36.5 Z" />
+
+    <!-- Top-Right Widget Tile -->
+    <path
+        android:fillColor="#30D158"
+        android:pathData="M 62,27 L 77,27 A 5,5 0 0 1 82,32 L 82,46 A 5,5 0 0 1 77,51 L 62,51 A 5,5 0 0 1 57,46 L 57,32 A 5,5 0 0 1 62,27 Z" />
+    <!-- Play Icon in Top-Right -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 67,35 L 74,39 L 67,43 Z" />
+
+    <!-- Bottom Wide Widget Tile -->
+    <path
+        android:fillColor="#5E5CE6"
+        android:pathData="M 31,57 L 77,57 A 5,5 0 0 1 82,62 L 82,76 A 5,5 0 0 1 77,81 L 31,81 A 5,5 0 0 1 26,76 L 26,62 A 5,5 0 0 1 31,57 Z" />
+    <!-- Status Lines in Bottom Tile -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 33,64 H 75 V 66.5 H 33 Z M 33,71.5 H 58 V 74 H 33 Z" />
+</vector>

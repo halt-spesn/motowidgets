@@ -1,0 +1,11 @@
+<resources>
+    <color name="shelf_bg">#00000000</color>
+    <color name="card_bg">#30FFFFFF</color>
+    <color name="card_stroke">#25FFFFFF</color>
+    <color name="accent_blue">#0A84FF</color>
+    <color name="accent_green">#30D158</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#99EBEBF5</color>
+    <color name="pill_bg">#2C2C2E</color>
+    <color name="delete_red">#FF453A</color>
+</resources>
