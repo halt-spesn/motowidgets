@@ -10,6 +10,7 @@ public class WidgetHostManager {
     private static final String TAG = "WidgetHostManager";
     public static final int APPWIDGET_HOST_ID = 2048;
     private static AppWidgetHost sHost;
+    private static boolean sListening = false;
 
     private static class ShelfAppWidgetHost extends AppWidgetHost {
         ShelfAppWidgetHost(Context context, int hostId) {
@@ -30,11 +31,25 @@ public class WidgetHostManager {
     }
 
     public static synchronized void ensureListening(Context context) {
+        if (sListening) return;
         try {
             getHost(context).startListening();
+            sListening = true;
             Log.d(TAG, "AppWidgetHost listening started");
         } catch (Exception e) {
             Log.e(TAG, "Error starting AppWidgetHost listening", e);
+        }
+    }
+
+    public static synchronized void stopListening(Context context) {
+        if (sHost == null || !sListening) return;
+        try {
+            sHost.stopListening();
+            Log.d(TAG, "AppWidgetHost listening stopped");
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping AppWidgetHost listening", e);
+        } finally {
+            sListening = false;
         }
     }
 }

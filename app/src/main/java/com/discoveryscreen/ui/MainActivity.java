@@ -24,13 +24,17 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import com.discoveryscreen.widget.WidgetHostManager;
+import com.discoveryscreen.widget.WidgetSizing;
 import com.discoveryscreen.widget.WidgetStorage;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
     private static final int REQUEST_PICK_WIDGET = 1001;
     private static final int REQUEST_CREATE_WIDGET = 1002;
+    private static final int REQUEST_BIND_WIDGET = 1003;
 
     private AppWidgetManager mAppWidgetManager;
     private AppWidgetHost mAppWidgetHost;
@@ -51,6 +55,7 @@ public class MainActivity extends Activity {
         int btnAddId = getResources().getIdentifier("btn_add_widget", "id", getPackageName());
         int btnPreviewId = getResources().getIdentifier("btn_preview", "id", getPackageName());
         int btnSettingsId = getResources().getIdentifier("btn_open_launcher_settings", "id", getPackageName());
+        int btnLauncherInfoId = getResources().getIdentifier("btn_launcher_app_info", "id", getPackageName());
 
         mWidgetsPreviewContainer = findViewById(containerId);
         mTvNoWidgets = findViewById(noWidgetsId);
@@ -58,6 +63,7 @@ public class MainActivity extends Activity {
         Button btnAdd = findViewById(btnAddId);
         Button btnPreview = findViewById(btnPreviewId);
         Button btnSettings = findViewById(btnSettingsId);
+        Button btnLauncherInfo = findViewById(btnLauncherInfoId);
 
         if (btnAdd != null) {
             btnAdd.setOnClickListener(v -> launchWidgetPicker());
@@ -69,6 +75,9 @@ public class MainActivity extends Activity {
 
         if (btnSettings != null) {
             btnSettings.setOnClickListener(v -> openLauncherSettings());
+        }
+        if (btnLauncherInfo != null) {
+            btnLauncherInfo.setOnClickListener(v -> openLauncherAppInfo());
         }
 
         if ("pick_widget".equals(getIntent().getStringExtra("action"))) {
@@ -121,10 +130,7 @@ public class MainActivity extends Activity {
 
     private void launchWidgetPicker() {
         try {
-            mPendingWidgetId = mAppWidgetHost.allocateAppWidgetId();
-            Intent pickIntent = new Intent(AppWidgetManager.ACTION_APPWIDGET_PICK);
-            pickIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, mPendingWidgetId);
-            startActivityForResult(pickIntent, REQUEST_PICK_WIDGET);
+            startActivityForResult(new Intent(this, WidgetPickerActivity.class), REQUEST_PICK_WIDGET);
         } catch (Exception e) {
             Log.e(TAG, "Failed to launch widget picker", e);
             Toast.makeText(this, "Could not open widget picker: " + e.getMessage(), Toast.LENGTH_SHORT).show();
@@ -135,10 +141,17 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
+        if (requestCode == REQUEST_PICK_WIDGET) {
+            if (resultCode == RESULT_OK && data != null) {
+                ComponentName provider = data.getParcelableExtra(WidgetPickerActivity.EXTRA_PROVIDER);
+                if (provider != null) bindAndAddWidget(provider);
+            }
+            return;
+        }
+
         if (resultCode == RESULT_OK) {
-            if (requestCode == REQUEST_PICK_WIDGET) {
-                int widgetId = data != null ? data.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, mPendingWidgetId) : mPendingWidgetId;
-                configureOrAddWidget(widgetId);
+            if (requestCode == REQUEST_BIND_WIDGET) {
+                configureOrAddWidget(mPendingWidgetId);
             } else if (requestCode == REQUEST_CREATE_WIDGET) {
                 int widgetId = data != null ? data.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, mPendingWidgetId) : mPendingWidgetId;
                 saveAndDisplayWidget(widgetId);
@@ -148,6 +161,26 @@ public class MainActivity extends Activity {
                 mAppWidgetHost.deleteAppWidgetId(mPendingWidgetId);
                 mPendingWidgetId = -1;
             }
+        }
+    }
+
+    private void bindAndAddWidget(ComponentName provider) {
+        try {
+            mPendingWidgetId = mAppWidgetHost.allocateAppWidgetId();
+            if (mAppWidgetManager.bindAppWidgetIdIfAllowed(mPendingWidgetId, provider)) {
+                configureOrAddWidget(mPendingWidgetId);
+                return;
+            }
+
+            Intent bindIntent = new Intent(AppWidgetManager.ACTION_APPWIDGET_BIND);
+            bindIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, mPendingWidgetId);
+            bindIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, provider);
+            startActivityForResult(bindIntent, REQUEST_BIND_WIDGET);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to bind selected widget", e);
+            if (mPendingWidgetId != -1) mAppWidgetHost.deleteAppWidgetId(mPendingWidgetId);
+            mPendingWidgetId = -1;
+            Toast.makeText(this, "Could not add widget: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -190,7 +223,16 @@ public class MainActivity extends Activity {
     private void refreshWidgetsList() {
         if (mWidgetsPreviewContainer == null) return;
 
-        List<Integer> widgetIds = WidgetStorage.getWidgetIds(this);
+        List<Integer> storedIds = WidgetStorage.getWidgetIds(this);
+        Set<Integer> alive = new HashSet<>();
+        for (int id : storedIds) {
+            try {
+                if (mAppWidgetManager.getAppWidgetInfo(id) != null) {
+                    alive.add(id);
+                }
+            } catch (Exception ignored) {}
+        }
+        List<Integer> widgetIds = WidgetStorage.pruneStaleWidgets(this, alive);
 
         mWidgetsPreviewContainer.removeAllViews();
         if (widgetIds.isEmpty()) {
@@ -288,13 +330,9 @@ public class MainActivity extends Activity {
                 android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
                 int screenWidthDp = Math.max(280, (int) (dm.widthPixels / dm.density) - 48);
                 int effectiveHeightDp = heightDp > 0 ? heightDp : (info.minHeight > 0 ? info.minHeight : 150);
-                Bundle options = new Bundle();
-                options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, screenWidthDp);
-                options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, screenWidthDp);
-                options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, effectiveHeightDp);
-                options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, effectiveHeightDp);
                 try {
-                    widgetView.updateAppWidgetSize(options, screenWidthDp, effectiveHeightDp, screenWidthDp, effectiveHeightDp);
+                    WidgetSizing.updateHostViewSize(this, widgetView, info,
+                            screenWidthDp, effectiveHeightDp);
                 } catch (Exception ignored) {}
 
                 if (heightDp > 0) {
@@ -326,20 +364,51 @@ public class MainActivity extends Activity {
         Window window = dialog.getWindow();
         if (window != null) {
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                    && BlurSupport.isCrossWindowBlurEnabled(this)) {
+                try {
+                    window.setBackgroundBlurRadius(
+                            com.discoveryscreen.overlay.EvieProtocol.MAX_BLUR_RADIUS);
+                    window.setDimAmount(0.12f);
+                } catch (Exception ignored) {
+                }
+            }
         }
         dialog.setOnDismissListener(d -> shelfView.stopListening());
         dialog.show();
     }
 
     private void openLauncherSettings() {
+        android.content.SharedPreferences prefs =
+                getSharedPreferences("evie_overlay_prefs", MODE_PRIVATE);
+        String uri = prefs.getString("settings_intent_uri", null);
+        if (uri != null && !uri.isEmpty()) {
+            try {
+                Intent stored = Intent.parseUri(uri, 0);
+                stored.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(stored);
+                return;
+            } catch (Exception ignored) {
+            }
+        }
         try {
-            // Try opening Motorola Launcher preferences directly
             Intent intent = new Intent("android.intent.action.APPLICATION_PREFERENCES");
             intent.setPackage("com.motorola.launcher3");
             startActivity(intent);
         } catch (Exception e1) {
+            openLauncherAppInfo();
+        }
+    }
+
+    private void openLauncherAppInfo() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:com.motorola.launcher3"));
+            startActivity(intent);
+        } catch (Exception e1) {
             try {
-                // Fallback to Home settings
+                // Keep a useful destination if the Motorola launcher package
+                // is unavailable on this device.
                 Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS);
                 startActivity(intent);
             } catch (Exception e2) {

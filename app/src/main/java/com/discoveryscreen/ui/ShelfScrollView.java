@@ -24,6 +24,7 @@ public class ShelfScrollView extends ScrollView {
     private float mDownX;
     private float mDownY;
     private int mTouchSlop;
+    private final int[] mHitTestLoc = new int[2];
 
     public ShelfScrollView(Context context) {
         super(context);
@@ -114,7 +115,7 @@ public class ShelfScrollView extends ScrollView {
             return null;
         }
 
-        int[] loc = new int[2];
+        int[] loc = mHitTestLoc;
         root.getLocationOnScreen(loc);
         int x = loc[0];
         int y = loc[1];
