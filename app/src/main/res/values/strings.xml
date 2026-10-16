@@ -2,13 +2,20 @@
     <string name="app_name">Widget Shelf</string>
     <string name="service_name">Evie Minus One Screen Service</string>
     <string name="welcome_title">Moto Widget Shelf</string>
-    <string name="welcome_subtitle">iOS-style widgets on Motorola\'s -1 screen</string>
+    <string name="welcome_subtitle">iOS-style widgets, one swipe away on Motorola\'s -1 screen</string>
     <string name="step1_title">1. Enable in Moto Launcher</string>
-    <string name="step1_desc">Long-press Home screen -> Home settings -> Swipe access (or Minus one screen) -> select \"AppFlash\".</string>
+    <string name="step1_desc">On your home screen, open Home settings → Swipe access (or Minus one screen) → select “AppFlash”.</string>
+    <string name="first_setup_tip">First setup tip: If widgets don’t appear on the -1 screen, open Moto Launcher app info, tap Force stop, then return to the home screen.</string>
+    <string name="btn_launcher_settings">Open Launcher Settings</string>
+    <string name="btn_launcher_app_settings">Open Moto Launcher app info</string>
+    <string name="overlay_title">Allow display over other apps</string>
+    <string name="overlay_desc">This lets the widget shelf appear over your home screen.</string>
+    <string name="btn_grant_overlay">Allow permission</string>
     <string name="step2_title">2. Add Your Favorite Widgets</string>
     <string name="step2_desc">Tap the button below to add widgets (Weather, Clock, Spotify, Calendar, etc.).</string>
     <string name="btn_add_widget">+ Add Widget</string>
     <string name="btn_preview">Preview Widget Shelf</string>
-    <string name="empty_shelf">No widgets added yet.\nTap \"+ Add Widget\" to begin!</string>
+    <string name="active_widgets_title">Widgets on your -1 screen</string>
+    <string name="empty_shelf">Your shelf is empty\nAdd a widget to get started.</string>
     <string name="remove_widget">Remove Widget</string>
 </resources>

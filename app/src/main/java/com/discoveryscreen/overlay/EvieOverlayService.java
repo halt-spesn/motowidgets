@@ -20,9 +20,22 @@ import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import com.discoveryscreen.ui.WidgetShelfView;
 import com.discoveryscreen.widget.WidgetHostManager;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 public class EvieOverlayService extends Service {
     private static final String TAG = "EvieOverlayService";
+    public static final String ACTION_REOPEN_AFTER_WIDGET_ADD =
+            "com.discoveryscreen.action.REOPEN_AFTER_WIDGET_ADD";
+    public static final String EXTRA_ADDED_WIDGET_ID =
+            "com.discoveryscreen.extra.ADDED_WIDGET_ID";
+    private static final ExecutorService sIo = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "evie-io");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final boolean DBG = false;
 
     // Message codes defined by Launcher's EvieApi
     public static final int MSG_ATTACH_WINDOW = 0;
@@ -50,6 +63,14 @@ public class EvieOverlayService extends Service {
     private ValueAnimator mScrollAnimator;
     private int mLastAppliedBlur = -1;
     private float mLastAppliedDim = -1.0f;
+    private boolean mIsRtl = false;
+    private boolean mIsLightStatusBar = false;
+    private boolean mIsLightNavBar = false;
+    private boolean mIsStatusBarHidden = false;
+    private boolean mIsTranslucentNavBar = false;
+    private Intent mSettingsIntent = null;
+    private boolean mBlurSupported = true;
+    private final Consumer<Boolean> mBlurEnabledListener = this::onBlurEnabledChanged;
 
     private final Handler mIncomingHandler = new Handler(Looper.getMainLooper()) {
         @Override
@@ -75,26 +96,46 @@ public class EvieOverlayService extends Service {
                     Log.d(TAG, "Launcher resumed, lastProgress=" + mLastProgress);
                     WidgetHostManager.ensureListening(EvieOverlayService.this);
                     if (mShelfView != null) {
+                        boolean shelfOpen = mLastProgress > 0.01f;
                         mShelfView.setVisibility(View.VISIBLE);
                         if (mWindowLayoutParams != null) {
                             mWindowLayoutParams.alpha = 1.0f;
-                            mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                            if (shelfOpen) {
+                                mWindowLayoutParams.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+                            } else {
+                                mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                            }
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                                    && mBlurSupported) {
                                 mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND
                                         | WindowManager.LayoutParams.FLAG_DIM_BEHIND;
-                                mWindowLayoutParams.setBlurBehindRadius(0);
-                                mWindowLayoutParams.dimAmount = 0.0f;
-                                mLastAppliedBlur = 0;
-                                mLastAppliedDim = 0.0f;
+                                int blur = shelfOpen ? maxBlurRadiusPx() : 0;
+                                float dim = shelfOpen ? 0.12f : 0.0f;
+                                mWindowLayoutParams.setBlurBehindRadius(blur);
+                                mWindowLayoutParams.dimAmount = dim;
+                                mLastAppliedBlur = blur;
+                                mLastAppliedDim = dim;
                             }
                             safeUpdateViewLayout();
                         }
-                        mShelfView.reloadWidgets();
+                        if (mLastProgress > 0.01f || !mShelfView.hasInflated()) {
+                            mShelfView.reloadWidgets();
+                        }
                     }
                     break;
                 case MSG_DETACH_WINDOW:
                     handleDetachWindow();
+                    break;
+                case MSG_LIGHT_STATUS_BAR:
+                    handleLightStatusBar((msg.arg1 & 2) != 0);
+                    break;
+                case MSG_LIGHT_NAV_BAR:
+                    handleLightNavBar((msg.arg1 & 8) != 0);
+                    break;
+                case MSG_SETTINGS_INTENT:
+                    handleSettingsIntent(msg.obj instanceof Intent ? (Intent) msg.obj : null);
                     break;
                 case MSG_HIDE:
                 case MSG_TURN_OFF:
@@ -112,10 +153,52 @@ public class EvieOverlayService extends Service {
         super.onCreate();
         mWindowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         mLocalMessenger = new Messenger(mIncomingHandler);
-
+        try {
+            mBlurSupported = com.discoveryscreen.ui.BlurSupport.isCrossWindowBlurEnabled(this);
+        } catch (Exception ignored) {
+            mBlurSupported = false;
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            try {
+                mWindowManager.addCrossWindowBlurEnabledListener(mBlurEnabledListener);
+            } catch (Exception ignored) {
+                mBlurSupported = false;
+            }
+        }
         DisplayMetrics dm = getResources().getDisplayMetrics();
         mScreenWidth = dm.widthPixels;
         Log.d(TAG, "EvieOverlayService created. Screen width: " + mScreenWidth);
+    }
+
+    private void onBlurEnabledChanged(boolean enabled) {
+        mBlurSupported = enabled;
+        if (mShelfView != null) mShelfView.onCrossWindowBlurChanged(enabled);
+        if (mWindowLayoutParams != null) {
+            if (enabled) {
+                updateBlurForProgress(mLastProgress);
+            } else {
+                mWindowLayoutParams.flags &= ~(WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                        | WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                mWindowLayoutParams.setBlurBehindRadius(0);
+                mWindowLayoutParams.dimAmount = 0.0f;
+                mLastAppliedBlur = 0;
+                mLastAppliedDim = 0.0f;
+                safeUpdateViewLayout();
+            }
+        }
+    }
+
+    private int maxBlurRadiusPx() {
+        return Math.round(30.0f * getResources().getDisplayMetrics().density);
+    }
+
+    private int blurRadiusForProgress(float progress) {
+        int progressRadius = EvieProtocol.quantizeBlur(progress);
+        float fraction = progressRadius / (float) EvieProtocol.MAX_BLUR_RADIUS;
+        int targetPx = Math.round(maxBlurRadiusPx() * fraction);
+        if (progress >= 0.95f) return maxBlurRadiusPx();
+        return Math.round(targetPx / (float) EvieProtocol.BLUR_QUANTUM)
+                * EvieProtocol.BLUR_QUANTUM;
     }
 
     @Override
@@ -124,9 +207,76 @@ public class EvieOverlayService extends Service {
         return mLocalMessenger.getBinder();
     }
 
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_REOPEN_AFTER_WIDGET_ADD.equals(intent.getAction())) {
+            openShelfAfterWidgetAdd(intent.getIntExtra(EXTRA_ADDED_WIDGET_ID,
+                    android.appwidget.AppWidgetManager.INVALID_APPWIDGET_ID));
+        }
+        return START_NOT_STICKY;
+    }
+
+    private void openShelfAfterWidgetAdd(int addedWidgetId) {
+        if (mShelfView == null || mWindowLayoutParams == null || !mIsAttached) return;
+        Log.d(TAG, "Reopening shelf after widget add flow");
+        cancelScrollAnimator();
+        mShelfView.setVisibility(View.VISIBLE);
+        mShelfView.setTranslationX(0f);
+        mShelfView.setAlpha(1f);
+        mShelfView.restorePickerAfterWidgetAdd(addedWidgetId);
+        mWindowLayoutParams.alpha = 1.0f;
+        mWindowLayoutParams.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                && mBlurSupported) {
+            mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                    | WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+            mWindowLayoutParams.setBlurBehindRadius(maxBlurRadiusPx());
+            mWindowLayoutParams.dimAmount = 0.12f;
+            mLastAppliedBlur = maxBlurRadiusPx();
+            mLastAppliedDim = 0.12f;
+        }
+        mLastProgress = 1f;
+        safeUpdateViewLayout();
+        mShelfView.requestFocus();
+        mShelfView.settleSwipe(true);
+        sendScrollToLauncher(1f);
+    }
+
+    private void hideShelfForWidgetAdd() {
+        if (mShelfView == null || mWindowLayoutParams == null) return;
+        cancelScrollAnimator();
+        mShelfView.setDeferSlowWidgets(false);
+        mShelfView.setTranslationX(EvieProtocol.offscreenTranslationX(mScreenWidth, mIsRtl));
+        mShelfView.setAlpha(0f);
+        mShelfView.setVisibility(View.GONE);
+        mWindowLayoutParams.alpha = 0f;
+        mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            mWindowLayoutParams.setBlurBehindRadius(0);
+            mWindowLayoutParams.dimAmount = 0f;
+            mLastAppliedBlur = 0;
+            mLastAppliedDim = 0f;
+        }
+        mLastProgress = 0f;
+        safeUpdateViewLayout();
+        sendScrollToLauncher(0f);
+        mShelfView.settleSwipe(false);
+    }
+
     private void handleAttachWindow(Message msg) {
         Log.d(TAG, "handleAttachWindow received");
         mLauncherMessenger = msg.replyTo;
+
+        EvieProtocol.AttachFlags flags = EvieProtocol.parseAttachFlags(msg.arg1);
+        mIsRtl = flags.isRtl;
+        mIsLightStatusBar = flags.isLightStatusBar;
+        mIsStatusBarHidden = flags.isStatusBarHidden;
+        mIsLightNavBar = flags.isLightNavBar;
+        mIsTranslucentNavBar = flags.isTranslucentNavBar;
+        Log.d(TAG, "Attach flags: " + flags);
+        applySystemBarAppearance();
 
         if (msg.obj instanceof WindowManager.LayoutParams) {
             WindowManager.LayoutParams hostLp = (WindowManager.LayoutParams) msg.obj;
@@ -142,13 +292,73 @@ public class EvieOverlayService extends Service {
         notifyLauncherServiceState(true);
     }
 
+    void handleLightStatusBar(boolean isLight) {
+        mIsLightStatusBar = isLight;
+        Log.d(TAG, "Light status bar: " + isLight);
+        applySystemBarAppearance();
+    }
+
+    void handleLightNavBar(boolean isLight) {
+        mIsLightNavBar = isLight;
+        Log.d(TAG, "Light nav bar: " + isLight);
+        applySystemBarAppearance();
+    }
+
+    void handleSettingsIntent(Intent intent) {
+        mSettingsIntent = intent;
+        Log.d(TAG, "Settings intent received: " + intent);
+        try {
+            String uri = intent != null ? intent.toUri(0) : null;
+            final String value = uri != null ? uri : "";
+            sIo.execute(() -> {
+                try {
+                    getSharedPreferences("evie_overlay_prefs", MODE_PRIVATE)
+                            .edit()
+                            .putString("settings_intent_uri", value)
+                            .apply();
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to persist settings intent", e);
+                }
+            });
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to persist settings intent", e);
+        }
+    }
+
+    private void applySystemBarAppearance() {
+        if (mShelfView != null) {
+            mShelfView.setIsRtl(mIsRtl);
+            mShelfView.setLightSystemBars(mIsLightStatusBar, mIsLightNavBar);
+        }
+    }
+
+    public boolean isRtl() {
+        return mIsRtl;
+    }
+
+    public boolean isLightStatusBar() {
+        return mIsLightStatusBar;
+    }
+
+    public boolean isLightNavBar() {
+        return mIsLightNavBar;
+    }
+
+    public Intent getSettingsIntent() {
+        return mSettingsIntent;
+    }
+
     private void attachShelfWindow(IBinder hostToken) {
         if (mIsAttached && mShelfView != null) {
             return;
         }
 
         mShelfView = new WidgetShelfView(this);
+        mShelfView.onCrossWindowBlurChanged(mBlurSupported);
         mShelfView.setOnCloseListener(this::closeShelf);
+        mShelfView.setOnWidgetAddListener(this::hideShelfForWidgetAdd);
+        mShelfView.setIsRtl(mIsRtl);
+        mShelfView.setLightSystemBars(mIsLightStatusBar, mIsLightNavBar);
         mShelfView.setSwipeProgressListener(progress -> {
             mLastProgress = progress;
             updateBlurForProgress(progress);
@@ -180,7 +390,6 @@ public class EvieOverlayService extends Service {
             mWindowLayoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
 
-        // Apply authentic background wallpaper blur like launcher all-apps drawer (Android 12+)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND
                     | WindowManager.LayoutParams.FLAG_DIM_BEHIND;
@@ -190,8 +399,7 @@ public class EvieOverlayService extends Service {
             mLastAppliedDim = 0.0f;
         }
 
-        // Position offscreen to the left initially, keep VISIBLE so SurfaceControl remains allocated
-        mShelfView.setTranslationX(-mScreenWidth);
+        mShelfView.setTranslationX(EvieProtocol.offscreenTranslationX(mScreenWidth, mIsRtl));
         mShelfView.setAlpha(0.0f);
         mShelfView.setVisibility(View.VISIBLE);
 
@@ -220,15 +428,18 @@ public class EvieOverlayService extends Service {
         cancelScrollAnimator();
         WidgetHostManager.ensureListening(this);
         if (mShelfView != null) {
+            mShelfView.setSwipeActive(true);
+            mShelfView.setDeferSlowWidgets(true);
             mShelfView.setVisibility(View.VISIBLE);
             mShelfView.reloadWidgets();
         }
-        // Clear touch/focus blocking flags so WindowManager and SurfaceFlinger allow active blur-behind composition
+        // Clear touch/focus blocking flags so WindowManager and SurfaceFlinger allow active blur-behind composition.
         if (mWindowLayoutParams != null) {
             mWindowLayoutParams.alpha = 1.0f;
             mWindowLayoutParams.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                    && mBlurSupported) {
                 mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND
                         | WindowManager.LayoutParams.FLAG_DIM_BEHIND;
             }
@@ -256,7 +467,7 @@ public class EvieOverlayService extends Service {
 
         int quantizedBlur = 0;
         float targetDim = 0.0f;
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && mBlurSupported) {
             if ((mWindowLayoutParams.flags & WindowManager.LayoutParams.FLAG_BLUR_BEHIND) == 0) {
                 mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
                 lpChanged = true;
@@ -265,24 +476,13 @@ public class EvieOverlayService extends Service {
                 mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_DIM_BEHIND;
                 lpChanged = true;
             }
-
-            // Responsive depth curve matching Motorola Launcher: blur begins perceptibly early
-            float factor = Math.min(p * 2.2f, 1.0f);
-            int blur = Math.max(0, Math.min(100, Math.round(factor * 100)));
-            quantizedBlur = (blur / 4) * 4;
-            if (p >= 0.95f) quantizedBlur = 100;
-            if (p <= 0.01f) quantizedBlur = 0;
+            quantizedBlur = blurRadiusForProgress(p);
             if (quantizedBlur != mLastAppliedBlur) {
                 mLastAppliedBlur = quantizedBlur;
                 mWindowLayoutParams.setBlurBehindRadius(quantizedBlur);
                 lpChanged = true;
             }
-
-            // SurfaceFlinger requires Dim Layer getAlpha() > 0 to be visible (EffectLayer::isVisible).
-            // Without dimAmount, alpha is 0 and SurfaceFlinger culls the Dim Layer as "color{<0,0,0,0>}".
-            // Setting a minimal dimAmount ensures SurfaceFlinger keeps the blur Dim Layer alive!
-            targetDim = (quantizedBlur > 0) ? Math.max(0.01f, p * 0.12f) : 0.0f;
-            targetDim = Math.round(targetDim * 100.0f) / 100.0f;
+            targetDim = EvieProtocol.computeDim(p, quantizedBlur);
             if (Math.abs(mLastAppliedDim - targetDim) > 0.005f) {
                 mLastAppliedDim = targetDim;
                 mWindowLayoutParams.dimAmount = targetDim;
@@ -291,30 +491,31 @@ public class EvieOverlayService extends Service {
         }
 
         if (lpChanged) {
-            Log.d(TAG, "updateBlurForProgress: p=" + p + " -> appliedBlur=" + quantizedBlur + ", dim=" + targetDim + ", attached=" + (mShelfView != null && mShelfView.isAttachedToWindow()));
+            if (DBG) {
+                Log.d(TAG, "updateBlurForProgress: p=" + p + " -> appliedBlur=" + quantizedBlur + ", dim=" + targetDim + ", attached=" + (mShelfView != null && mShelfView.isAttachedToWindow()));
+            }
             safeUpdateViewLayout();
         }
     }
 
     private void applyShelfProgress(float p) {
-        mLastProgress = p;
+        float clamped = EvieProtocol.clampProgress(p);
+        mLastProgress = clamped;
         if (mShelfView != null) {
-            if (p > 0.001f && mShelfView.getVisibility() != View.VISIBLE) {
+            if (clamped > 0.001f && mShelfView.getVisibility() != View.VISIBLE) {
                 mShelfView.setVisibility(View.VISIBLE);
                 WidgetHostManager.ensureListening(this);
             }
-            float tx = (p - 1.0f) * mScreenWidth;
-            mShelfView.setTranslationX(tx);
+            mShelfView.setTranslationX(EvieProtocol.computeTranslationX(clamped, mScreenWidth, mIsRtl));
             // Smooth fade-in / fade-out animation
-            float alpha = Math.max(0.0f, Math.min(1.0f, p));
-            mShelfView.setAlpha(alpha);
+            mShelfView.setAlpha(EvieProtocol.computeAlpha(clamped));
         }
 
-        updateBlurForProgress(p);
+        updateBlurForProgress(clamped);
     }
 
     private void handleUpdateScroll(float progress) {
-        Log.d(TAG, "handleUpdateScroll: p=" + progress);
+        if (DBG) Log.d(TAG, "handleUpdateScroll: p=" + progress);
         if (mScrollAnimator != null && mScrollAnimator.isRunning()) {
             cancelScrollAnimator();
         }
@@ -324,10 +525,11 @@ public class EvieOverlayService extends Service {
     private void handleEndScroll(float velocity) {
         Log.d(TAG, "handleEndScroll: progress=" + mLastProgress + ", velocity=" + velocity);
         if (mShelfView == null || mWindowLayoutParams == null) return;
+        mShelfView.setDeferSlowWidgets(false);
 
-        // Fling right (positive velocity) or drag past 35% opens the shelf
-        final boolean shouldOpen = (velocity > 300) || (velocity > -300 && mLastProgress > 0.35f);
+        final boolean shouldOpen = EvieProtocol.shouldOpen(mLastProgress, velocity);
         final float target = shouldOpen ? 1.0f : 0.0f;
+        if (!shouldOpen) prepareShelfForClose();
 
         animateShelf(mLastProgress, target, () -> {
             if (shouldOpen) {
@@ -336,19 +538,22 @@ public class EvieOverlayService extends Service {
                 // Clear touch blocking flags so shelf and widgets receive touch events!
                 mWindowLayoutParams.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                        && mBlurSupported) {
                     mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND
                             | WindowManager.LayoutParams.FLAG_DIM_BEHIND;
-                    mWindowLayoutParams.setBlurBehindRadius(100);
+                    mWindowLayoutParams.setBlurBehindRadius(maxBlurRadiusPx());
                     mWindowLayoutParams.dimAmount = 0.12f;
-                    mLastAppliedBlur = 100;
+                    mLastAppliedBlur = maxBlurRadiusPx();
                     mLastAppliedDim = 0.12f;
                 }
                 safeUpdateViewLayout();
                 mShelfView.requestFocus();
                 sendScrollToLauncher(1.0f);
+                mShelfView.settleSwipe(true);
+                mShelfView.onShelfOpened();
             } else {
-                mShelfView.setTranslationX(-mScreenWidth);
+                mShelfView.setTranslationX(EvieProtocol.offscreenTranslationX(mScreenWidth, mIsRtl));
                 mShelfView.setAlpha(0.0f);
                 mShelfView.setVisibility(View.VISIBLE);
                 mWindowLayoutParams.alpha = 1.0f;
@@ -362,6 +567,7 @@ public class EvieOverlayService extends Service {
                 }
                 safeUpdateViewLayout();
                 sendScrollToLauncher(0.0f);
+                mShelfView.settleSwipe(false);
             }
         });
     }
@@ -369,6 +575,8 @@ public class EvieOverlayService extends Service {
     public void closeShelf() {
         Log.d(TAG, "closeShelf requested");
         if (mShelfView == null || mWindowLayoutParams == null) return;
+        mShelfView.setDeferSlowWidgets(false);
+        prepareShelfForClose();
 
         // Immediately block touches on shelf while animating closed
         mWindowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -379,14 +587,14 @@ public class EvieOverlayService extends Service {
         float startProgress;
         if (mScreenWidth > 0) {
             float currentTx = mShelfView.getTranslationX();
-            startProgress = Math.max(0.0f, Math.min(1.0f, 1.0f + (currentTx / (float) mScreenWidth)));
+            startProgress = EvieProtocol.progressFromTranslationX(currentTx, mScreenWidth, mIsRtl);
         } else {
             startProgress = mLastProgress > 0 ? mLastProgress : 1.0f;
         }
 
         animateShelf(startProgress, 0.0f, () -> {
             if (mShelfView != null) {
-                mShelfView.setTranslationX(-mScreenWidth);
+                mShelfView.setTranslationX(EvieProtocol.offscreenTranslationX(mScreenWidth, mIsRtl));
                 mShelfView.setAlpha(0.0f);
                 mShelfView.setVisibility(View.VISIBLE);
             }
@@ -403,6 +611,7 @@ public class EvieOverlayService extends Service {
                 safeUpdateViewLayout();
             }
             sendScrollToLauncher(0.0f);
+            mShelfView.settleSwipe(false);
         });
     }
 
@@ -471,6 +680,9 @@ public class EvieOverlayService extends Service {
 
     private void handleDetachWindow() {
         Log.d(TAG, "handleDetachWindow");
+        if (mShelfView != null) {
+            mShelfView.cancelPendingInflation();
+        }
         if (mIsAttached && mShelfView != null) {
             try {
                 mShelfView.stopListening();
@@ -483,15 +695,21 @@ public class EvieOverlayService extends Service {
             mShelfView = null;
             mIsAttached = false;
         }
+        WidgetHostManager.stopListening(this);
     }
 
     private void handleHide() {
         Log.d(TAG, "handleHide");
         cancelScrollAnimator();
+        if (mShelfView != null) {
+            mShelfView.setDeferSlowWidgets(false);
+            mShelfView.dropPendingReload();
+            prepareShelfForClose();
+        }
         mLastProgress = 0.0f;
         sendScrollToLauncher(0.0f);
         if (mShelfView != null) {
-            mShelfView.setTranslationX(-mScreenWidth);
+            mShelfView.setTranslationX(EvieProtocol.offscreenTranslationX(mScreenWidth, mIsRtl));
             mShelfView.setAlpha(0.0f);
             mShelfView.setVisibility(View.GONE);
             if (mWindowLayoutParams != null) {
@@ -507,6 +725,10 @@ public class EvieOverlayService extends Service {
                 safeUpdateViewLayout();
             }
         }
+    }
+
+    private void prepareShelfForClose() {
+        if (mShelfView != null) mShelfView.prepareForShelfClose();
     }
 
     private void safeUpdateViewLayout() {
@@ -533,6 +755,13 @@ public class EvieOverlayService extends Service {
 
     @Override
     public void onDestroy() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                && mWindowManager != null) {
+            try {
+                mWindowManager.removeCrossWindowBlurEnabledListener(mBlurEnabledListener);
+            } catch (Exception ignored) {
+            }
+        }
         super.onDestroy();
         handleDetachWindow();
     }

@@ -4,9 +4,10 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-BUILD_TOOLS="/opt/android-sdk/build-tools/36.0.0"
-PLATFORM="/opt/android-sdk/platforms/android-37.0/android.jar"
-OUTPUT_APK="/home/hallt/widgettest/app-debug.apk"
+SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/opt/android-sdk}}"
+BUILD_TOOLS="$SDK_ROOT/build-tools/36.0.0"
+PLATFORM="$SDK_ROOT/platforms/android-37.0/android.jar"
+OUTPUT_APK="$PROJECT_DIR/build/app-debug.apk"
 
 echo "=== Building MotoWidgetShelf ==="
 echo "Build tools: $BUILD_TOOLS"
