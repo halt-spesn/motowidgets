@@ -17,6 +17,9 @@ javac -d "$OUT" \
   "$PROJECT_DIR/app/src/main/java/com/discoveryscreen/widget/WidgetInflationPolicy.java" \
   "$PROJECT_DIR/app/src/main/java/com/discoveryscreen/widget/ReloadGate.java" \
   "$PROJECT_DIR/app/src/main/java/com/discoveryscreen/widget/StagedQueue.java" \
+  "$PROJECT_DIR/app/src/main/java/com/discoveryscreen/widget/MotionMath.java" \
+  "$PROJECT_DIR/app/src/main/java/com/discoveryscreen/widget/SpringConfig.java" \
+  "$PROJECT_DIR/app/src/main/java/com/discoveryscreen/widget/SpringSolver.java" \
   "$SCRIPT_DIR/src/"*.java
 
 echo "=== Running tests ==="

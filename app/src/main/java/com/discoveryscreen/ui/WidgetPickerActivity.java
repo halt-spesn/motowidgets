@@ -14,6 +14,7 @@ import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -82,6 +83,8 @@ public class WidgetPickerActivity extends Activity {
         scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
+        EdgeToEdge.padFor(root,
+                WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
 
         empty = text("No widgets found", 15, Color.rgb(166, 166, 175), false);
         empty.setGravity(Gravity.CENTER);

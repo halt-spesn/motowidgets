@@ -10,7 +10,6 @@ import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
-import android.view.animation.PathInterpolator;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.TypedValue;
@@ -28,8 +27,11 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.animation.ValueAnimator;
+import android.animation.AnimatorSet;
+import android.animation.ObjectAnimator;
 import android.animation.LayoutTransition;
 import com.discoveryscreen.R;
+import com.discoveryscreen.widget.Interpolators;
 
 import java.text.Collator;
 import java.util.ArrayList;
@@ -49,6 +51,7 @@ final class WidgetPickerSheet extends FrameLayout {
     interface Listener {
         void onWidgetSelected(ComponentName provider);
         void onDismissed();
+        void onBlurProgress(float progress);
     }
 
     private final Listener listener;
@@ -64,8 +67,15 @@ final class WidgetPickerSheet extends FrameLayout {
     private LinearLayout frostedPanel;
     private View bottomSpacer;
     private int navigationBarInset;
+    private int statusBarInset;
     private boolean dismissing;
     private Runnable afterDismiss;
+    private int openAnimationGeneration;
+    private ValueAnimator panelHeightAnimator;
+    private AnimatorSet panelOpenAnimator;
+    private ValueAnimator blurProgressAnimator;
+    private float pickerBlurProgress;
+    private int availableHeight;
     private int collapsedHeight;
     private int expandedHeight;
     private float dragStartY;
@@ -156,6 +166,12 @@ final class WidgetPickerSheet extends FrameLayout {
                 invalidate();
                 requestLayout();
             }
+            int topInset = insets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()).top;
+            if (statusBarInset != topInset) {
+                statusBarInset = topInset;
+                updatePanelHeight();
+            }
             return insets;
         });
 
@@ -241,11 +257,11 @@ final class WidgetPickerSheet extends FrameLayout {
         empty.setGravity(Gravity.CENTER);
 
         // Motorola opens this picker as a full-screen sheet from the start.
-        int availableHeight = getResources().getDisplayMetrics().heightPixels;
-        collapsedHeight = availableHeight;
-        expandedHeight = availableHeight;
-        FrameLayout.LayoutParams sheetLp = new FrameLayout.LayoutParams(-1, collapsedHeight, Gravity.BOTTOM);
+        availableHeight = getResources().getDisplayMetrics().heightPixels;
+        FrameLayout.LayoutParams sheetLp =
+                new FrameLayout.LayoutParams(-1, availableHeight, Gravity.BOTTOM);
         addView(sheet, sheetLp);
+        updatePanelHeight();
 
         render("");
         search.addTextChangedListener(new TextWatcher() {
@@ -302,14 +318,51 @@ final class WidgetPickerSheet extends FrameLayout {
     }
 
     private void animatePanelToHeight(int height) {
+        if (panelHeightAnimator != null) panelHeightAnimator.cancel();
         int from = frostedPanel.getLayoutParams().height;
         ValueAnimator animator = ValueAnimator.ofInt(from, height);
+        panelHeightAnimator = animator;
         animator.setDuration(220);
         animator.setInterpolator(new DecelerateInterpolator());
         animator.addUpdateListener(value -> setPanelHeight((Integer) value.getAnimatedValue()));
+        animator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (panelHeightAnimator == animator) panelHeightAnimator = null;
+            }
+            @Override public void onAnimationCancel(android.animation.Animator animation) {
+                if (panelHeightAnimator == animator) panelHeightAnimator = null;
+            }
+        });
         animator.start();
         frostedPanel.animate().translationY(0).setDuration(220)
                 .setInterpolator(new DecelerateInterpolator()).start();
+    }
+
+    @Override
+    protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight);
+        updatePanelHeight();
+    }
+
+    /** Keeps the panel below the status bar, with the same 8dp gap as the shelf header. */
+    private void updatePanelHeight() {
+        if (frostedPanel == null) return;
+        int offset = statusBarInset == 0 ? 0 : statusBarInset + dp(8);
+        int base = getHeight() > 0 ? getHeight() : availableHeight;
+        int height = Math.max(0, base - offset);
+        if (collapsedHeight == height && expandedHeight == height) return;
+        // The old height target is stale after a resize. Leave the slide animation alone; layout can
+        // run while the sheet is opening.
+        if (panelHeightAnimator != null) panelHeightAnimator.cancel();
+        collapsedHeight = height;
+        expandedHeight = height;
+        setPanelHeight(height);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        requestApplyInsets();
     }
 
     private ProviderSnapshot loadProviderSnapshot() {
@@ -680,25 +733,35 @@ final class WidgetPickerSheet extends FrameLayout {
     private void dismiss(Runnable completion) {
         if (getVisibility() != VISIBLE || dismissing) return;
         dismissing = true;
+        openAnimationGeneration++;
         afterDismiss = completion;
         animate().cancel();
+        if (panelOpenAnimator != null) panelOpenAnimator.cancel();
         frostedPanel.animate().cancel();
+        if (blurProgressAnimator != null) blurProgressAnimator.cancel();
+        blurProgressAnimator = createBlurProgressAnimator(pickerBlurProgress, 0f, 267);
+        blurProgressAnimator.start();
         animate()
                 .alpha(0f)
-                .setDuration(190)
-                .setInterpolator(new PathInterpolator(0.4f, 0f, 1f, 1f))
+                .setDuration(267)
+                .setInterpolator(Interpolators.LINEAR)
                 .withEndAction(this::finishDismiss)
                 .start();
         frostedPanel.animate()
-                .translationY(dp(24))
-                .setDuration(220)
-                .setInterpolator(new PathInterpolator(0.4f, 0f, 1f, 1f))
+                .translationY(frostedPanel.getHeight())
+                .setDuration(267)
+                .setInterpolator(Interpolators.ACCELERATE)
                 .start();
     }
 
     private void finishDismiss() {
         if (!dismissing) return;
         dismissing = false;
+        if (blurProgressAnimator != null) {
+            blurProgressAnimator.cancel();
+            blurProgressAnimator = null;
+        }
+        listener.onBlurProgress(0f);
         setVisibility(GONE);
         Runnable completion = afterDismiss;
         afterDismiss = null;
@@ -713,21 +776,63 @@ final class WidgetPickerSheet extends FrameLayout {
         dismissing = false;
         afterDismiss = null;
         animate().cancel();
+        if (panelOpenAnimator != null) panelOpenAnimator.cancel();
         frostedPanel.animate().cancel();
+        if (blurProgressAnimator != null) blurProgressAnimator.cancel();
         refreshProviders();
         setVisibility(VISIBLE);
         setAlpha(0f);
-        frostedPanel.setTranslationY(dp(20));
         animate()
                 .alpha(1f)
-                .setDuration(180)
-                .setInterpolator(new PathInterpolator(0.2f, 0f, 0f, 1f))
+                .setDuration(200)
+                .setInterpolator(Interpolators.STANDARD)
                 .start();
-        frostedPanel.animate()
-                .translationY(0f)
-                .setDuration(240)
-                .setInterpolator(new PathInterpolator(0.2f, 0f, 0f, 1f))
-                .start();
+        int generation = ++openAnimationGeneration;
+        frostedPanel.post(() -> {
+            if (generation != openAnimationGeneration || dismissing
+                    || getVisibility() != VISIBLE) return;
+            int height = frostedPanel.getHeight();
+            ObjectAnimator translation = ObjectAnimator.ofFloat(
+                    frostedPanel, View.TRANSLATION_Y, height, 0f);
+            translation.setDuration(267);
+            translation.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN);
+            ObjectAnimator contentFade = ObjectAnimator.ofFloat(
+                    frostedPanel, View.ALPHA, 0f, 1f);
+            contentFade.setDuration(150);
+            contentFade.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN);
+            AnimatorSet opening = new AnimatorSet();
+            panelOpenAnimator = opening;
+            blurProgressAnimator = createBlurProgressAnimator(0f, 1f, 267);
+            opening.playTogether(translation, contentFade, blurProgressAnimator);
+            opening.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator animation) {
+                    if (panelOpenAnimator == opening) panelOpenAnimator = null;
+                }
+                @Override public void onAnimationCancel(android.animation.Animator animation) {
+                    if (panelOpenAnimator == opening) panelOpenAnimator = null;
+                }
+            });
+            opening.start();
+        });
+    }
+
+    private ValueAnimator createBlurProgressAnimator(float from, float to, long duration) {
+        ValueAnimator animator = ValueAnimator.ofFloat(from, to);
+        animator.setDuration(duration);
+        animator.setInterpolator(Interpolators.LINEAR_OUT_SLOW_IN);
+        animator.addUpdateListener(value -> {
+            pickerBlurProgress = (Float) value.getAnimatedValue();
+            listener.onBlurProgress(pickerBlurProgress);
+        });
+        animator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (blurProgressAnimator == animator) blurProgressAnimator = null;
+            }
+            @Override public void onAnimationCancel(android.animation.Animator animation) {
+                if (blurProgressAnimator == animator) blurProgressAnimator = null;
+            }
+        });
+        return animator;
     }
 
     private void refreshProviders() {

@@ -18,6 +18,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -46,6 +47,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(getResources().getIdentifier("activity_main", "layout", getPackageName()));
+        // targetSdk 36 draws edge-to-edge, so apply the system bar insets here.
+        EdgeToEdge.padFor(findViewById(android.R.id.content), WindowInsets.Type.systemBars());
 
         mAppWidgetManager = AppWidgetManager.getInstance(this);
         mAppWidgetHost = WidgetHostManager.getHost(this);

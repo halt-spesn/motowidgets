@@ -9,6 +9,9 @@ public final class RunTests {
         failures += runOne("WidgetInflationPolicy", WidgetInflationPolicyTest::run);
         failures += runOne("StagedQueue", StagedQueueTest::run);
         failures += runOne("ReloadGate", ReloadGateTest::run);
+        failures += runOne("MotionMath", MotionMathTest::run);
+        failures += runOne("SpringConfig", SpringConfigTest::run);
+        failures += runOne("SpringSolver", SpringSolverTest::run);
         if (failures > 0) {
             System.out.println("RESULT: " + failures + " SUITE(S) FAILED");
             System.exit(1);

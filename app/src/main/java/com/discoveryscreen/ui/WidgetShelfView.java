@@ -123,6 +123,15 @@ public class WidgetShelfView extends FrameLayout {
         t.setDaemon(true);
         return t;
     });
+    private static final int PICKER_BLUR_STEPS = 12;
+    private static final ExecutorService sPickerBlurLoader = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "picker-blur-effects");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile RenderEffect[] mPickerBlurEffects;
+    private boolean mPickerBlurEffectsLoading;
+    private float mPickerBlurProgress;
     private final java.util.Set<Integer> mFailedWidgetIds = new java.util.HashSet<>();
     private final java.util.Set<Integer> mWidgetsBeingRemoved = new java.util.HashSet<>();
     private boolean mDeferSlowWidgets = false;
@@ -892,7 +901,7 @@ public class WidgetShelfView extends FrameLayout {
 
     private void showWidgetPicker() {
         if (mWidgetPickerSheet != null) {
-            setPickerBackgroundBlur(true);
+            setPickerBackgroundBlur(0f);
             mWidgetPickerSheet.showAnimated();
             mWidgetPickerSheet.bringToFront();
             mWidgetPickerSheet.requestFocus();
@@ -912,29 +921,58 @@ public class WidgetShelfView extends FrameLayout {
 
             @Override
             public void onDismissed() {
-                setPickerBackgroundBlur(false);
+                setPickerBackgroundBlur(0f);
                 WidgetPickerSheet sheet = mWidgetPickerSheet;
                 mWidgetPickerSheet = null;
                 if (sheet != null) removeView(sheet);
             }
+
+            @Override
+            public void onBlurProgress(float progress) {
+                setPickerBackgroundBlur(progress);
+            }
         });
         addView(mWidgetPickerSheet, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setPickerBackgroundBlur(true);
+        setPickerBackgroundBlur(0f);
         mWidgetPickerSheet.bringToFront();
         mWidgetPickerSheet.showAnimated();
         mWidgetPickerSheet.requestFocus();
     }
 
     /** Blur only the shelf layer; the picker is a sibling and stays crisp above it. */
-    private void setPickerBackgroundBlur(boolean enabled) {
+    private void setPickerBackgroundBlur(float progress) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
-        RenderEffect effect = enabled
-                ? RenderEffect.createBlurEffect(dpToPx(getContext(), 20),
-                        dpToPx(getContext(), 20), Shader.TileMode.CLAMP)
-                : null;
+        mPickerBlurProgress = Math.max(0f, Math.min(1f, progress));
+        RenderEffect[] effects = mPickerBlurEffects;
+        if (effects == null) {
+            preparePickerBlurEffects();
+            return;
+        }
+        int index = Math.round(mPickerBlurProgress * PICKER_BLUR_STEPS);
+        RenderEffect effect = index == 0 ? null : effects[index];
         if (mShelfContentRoot != null) mShelfContentRoot.setRenderEffect(effect);
         if (mResizeFrame != null) mResizeFrame.setRenderEffect(effect);
+    }
+
+    /** Cache blur levels off-thread so animation frames only select an effect. */
+    private void preparePickerBlurEffects() {
+        if (mPickerBlurEffectsLoading || mPickerBlurEffects != null) return;
+        mPickerBlurEffectsLoading = true;
+        float maxRadius = dpToPx(getContext(), 20);
+        sPickerBlurLoader.execute(() -> {
+            RenderEffect[] effects = new RenderEffect[PICKER_BLUR_STEPS + 1];
+            for (int i = 1; i <= PICKER_BLUR_STEPS; i++) {
+                float radius = maxRadius * i / PICKER_BLUR_STEPS;
+                effects[i] = RenderEffect.createBlurEffect(
+                        radius, radius, Shader.TileMode.CLAMP);
+            }
+            mPickerBlurEffects = effects;
+            post(() -> {
+                mPickerBlurEffectsLoading = false;
+                setPickerBackgroundBlur(mPickerBlurProgress);
+            });
+        });
     }
 
     public void onCrossWindowBlurChanged(boolean enabled) {
