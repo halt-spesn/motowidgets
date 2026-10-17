@@ -2486,6 +2486,10 @@ public class WidgetShelfView extends FrameLayout {
                     if (old == null || c.isDragging()) {
                         continue;
                     }
+                    // Consumed for every card the reflow visits, not just the ones that move: a
+                    // release velocity that outlives this pass would seed a later, unrelated settle.
+                    float[] velocity = new float[2];
+                    boolean released = c.takeReleaseVelocity(velocity);
                     float dx = old[0] - c.getLeft();
                     float dy = old[1] - c.getTop();
                     float oldWidth = old.length > 2 ? old[2] : c.getWidth();
@@ -2494,7 +2498,8 @@ public class WidgetShelfView extends FrameLayout {
                     if (dx == 0f && dy == 0f && Math.abs(widthScale - 1f) < 0.001f) {
                         continue;
                     }
-                    animateGridTranslationToHome(c, dx, dy, widthScale);
+                    animateGridTranslationToHome(c, dx, dy, widthScale,
+                            released ? velocity : null);
                 }
                 return true;
             }
@@ -2504,22 +2509,37 @@ public class WidgetShelfView extends FrameLayout {
     }
 
     private void animateGridCardToHome(WidgetCardView card) {
-        animateGridTranslationToHome(card, card.getTranslationX(), card.getTranslationY());
+        float[] velocity = new float[2];
+        boolean released = card.takeReleaseVelocity(velocity);
+        animateGridTranslationToHome(card, card.getTranslationX(), card.getTranslationY(),
+                1f, released ? velocity : null);
     }
 
     private void animateGridTranslationToHome(WidgetCardView card, float fromX, float fromY) {
-        animateGridTranslationToHome(card, fromX, fromY, 1f);
+        animateGridTranslationToHome(card, fromX, fromY, 1f, null);
     }
 
+    /**
+     * Move a card from a stale visible position to its laid-out slot. A card the finger just let
+     * go of springs home with the gesture's release velocity, so a flick carries into the settle
+     * instead of stopping dead; every other card keeps the Launcher3
+     * {@code CellLayout.animateChildToPosition} timing.
+     */
     private void animateGridTranslationToHome(WidgetCardView card, float fromX, float fromY,
-                                               float fromScaleX) {
+                                               float fromScaleX, float[] releaseVelocity) {
         cancelGridMoveAnimation(card);
         if (fromX == 0f && fromY == 0f && Math.abs(fromScaleX - 1f) < 0.001f) return;
         card.setPivotX(0f);
         card.setTranslationX(fromX);
         card.setTranslationY(fromY);
         card.setScaleX(fromScaleX);
+        if (releaseVelocity != null) {
+            card.settleStateHome(releaseVelocity[0], releaseVelocity[1],
+                    () -> repositionResizeFrameFor(card));
+            return;
+        }
         android.animation.ValueAnimator animator = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        card.cancelSettleScaleAnimation();
         mGridMoveAnimators.put(card, animator);
         float distance = (float) Math.hypot(fromX, fromY);
         WidgetGridLayout grid = card.getParent() instanceof WidgetGridLayout
@@ -2563,6 +2583,13 @@ public class WidgetShelfView extends FrameLayout {
             animator.cancel();
             card.setScaleX(1f);
             card.setPivotX(card.getWidth() / 2f);
+        }
+        card.cancelSettleAnimation();
+    }
+
+    private void repositionResizeFrameFor(WidgetCardView card) {
+        if (card == mSelectedCard) {
+            repositionResizeFrame();
         }
     }
 

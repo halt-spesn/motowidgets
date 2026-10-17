@@ -260,6 +260,25 @@ public class WidgetGridLayout extends ViewGroup {
         return Math.max(0, Math.min(c, GRID_COLUMNS - 1));
     }
 
+    /**
+     * Left edge of the band a dragged card may occupy. Columns are exactly {@code GRID_COLUMNS}
+     * wide and row 0 is the top edge, so travel past the left, right, or top edge has nowhere to
+     * drop and is a "pull past the limit" case for {@link MotionMath#pullPastLimit}. The bottom
+     * edge is deliberately not limited: a drop below the last row creates a new row there, and the
+     * shelf auto-scrolls to reach it.
+     */
+    public float dragLimitLeftPx() {
+        return getPaddingLeft();
+    }
+
+    public float dragLimitRightPx(int cardWidthPx) {
+        return Math.max(dragLimitLeftPx(), getWidth() - getPaddingRight() - cardWidthPx);
+    }
+
+    public float dragLimitTopPx() {
+        return getPaddingTop();
+    }
+
     @Override
     protected LayoutParams generateDefaultLayoutParams() {
         return new GridLayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);

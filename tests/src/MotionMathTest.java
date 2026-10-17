@@ -80,6 +80,25 @@ public final class MotionMathTest {
         check(MotionMath.gradientDurationSeconds(0.75f, 400.0f, 0.0f) == Float.POSITIVE_INFINITY,
                 "zero velocity has no velocity-limited duration");
 
+        checkClose(MotionMath.pullPastLimit(0.0f, 200.0f), 0.0f, 1e-6f, "no pull without excess");
+        checkClose(MotionMath.pullPastLimit(-40.0f, 200.0f), 0.0f, 1e-6f, "pull is one-directional");
+        // Saturation is 0.1 * dimension at excess == dimension (the overshoot curve reaches 1.0 there).
+        checkClose(MotionMath.pullPastLimit(200.0f, 200.0f), 20.0f, 1e-3f, "pull saturates at the rubber band limit");
+        checkClose(MotionMath.pullPastLimit(1000.0f, 200.0f), 20.0f, 1e-3f, "pull cannot exceed saturation");
+        check(MotionMath.pullPastLimit(20.0f, 200.0f) < 20.0f,
+                "pull resists the finger instead of tracking it 1:1");
+        float pullPrevious = -1.0f;
+        for (float excess = 0.0f; excess <= 400.0f; excess += 20.0f) {
+            float pull = MotionMath.pullPastLimit(excess, 200.0f);
+            check(pull >= pullPrevious, "pull is monotonic at excess " + excess);
+            pullPrevious = pull;
+        }
+        checkThrows(() -> MotionMath.pullPastLimit(10.0f, 0.0f), "zero drag dimension");
+
+        checkClose(MotionMath.lerp(10.0f, 20.0f, 0.0f), 10.0f, 1e-6f, "lerp starts at from");
+        checkClose(MotionMath.lerp(10.0f, 20.0f, 1.0f), 20.0f, 1e-6f, "lerp ends at to");
+        checkClose(MotionMath.lerp(10.0f, 20.0f, 0.25f), 12.5f, 1e-6f, "lerp interpolates");
+
         check(MotionMath.clamp01(-2.0f) == 0.0f, "clamp01 floors at zero");
         check(MotionMath.clamp01(0.25f) == 0.25f, "clamp01 passes values through");
         check(MotionMath.clamp01(2.0f) == 1.0f, "clamp01 caps at one");

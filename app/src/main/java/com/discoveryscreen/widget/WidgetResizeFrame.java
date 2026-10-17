@@ -34,6 +34,12 @@ public class WidgetResizeFrame extends View {
     public static final int PRESET_LARGE = 2;
 
     public static final int BUTTON_PRESET_BASE = 10;
+
+    /** NotificationRoundnessManager's radius pair: {@code notification_corner_radius} (28dp) for
+     *  a row being dragged, {@code ..._small} (4dp) at rest. */
+    private static final float LARGE_CORNER_RADIUS_DP = 28f;
+    private static final long RADIUS_SETTLE_MS = 220L;
+
     public interface Listener {
         void onBorderDown(int edges);
 
@@ -58,6 +64,9 @@ public class WidgetResizeFrame extends View {
     private boolean mHasReconfigure;
     private int mAccent = 0xFF0A84FF;
     private float mRadius;
+    private float mRestingRadius;
+    private float mGestureRadius;
+    private ValueAnimator mRadiusAnim;
     private float mBand;
     private float mInset;
     private float mStroke;
@@ -123,6 +132,8 @@ public class WidgetResizeFrame extends View {
         if (mRadius <= 0f) {
             mRadius = 16f * density;
         }
+        mRestingRadius = mRadius;
+        mGestureRadius = Math.max(mRestingRadius, LARGE_CORNER_RADIUS_DP * density);
         rebuildPaints();
     }
 
@@ -177,10 +188,63 @@ public class WidgetResizeFrame extends View {
     }
 
     public void setCornerRadius(float radius) {
-        if (radius > 0f && mRadius != radius) {
+        if (radius <= 0f) {
+            return;
+        }
+        mRestingRadius = radius;
+        mGestureRadius = Math.max(radius, LARGE_CORNER_RADIUS_DP
+                * getResources().getDisplayMetrics().density);
+        if (mRadius != radius) {
             mRadius = radius;
             invalidate();
         }
+    }
+
+    /**
+     * Roundness ramp for an active resize: a gesture rounds the outline from the resting radius
+     * towards the large one as it travels, and eases back when it ends. Only the frame's outline
+     * ramps; the card's own clip radius is fixed by {@code RoundedCornerEnforcement}.
+     */
+    private void setGestureRoundness(float dx, float dy) {
+        float width = Math.max(1f, mFrame.width());
+        float height = Math.max(1f, mFrame.height());
+        float progress = Math.max(Math.abs(dx) / width, Math.abs(dy) / height);
+        animateRadius(MotionMath.lerp(mRestingRadius, mGestureRadius, MotionMath.clamp01(progress)),
+                0L);
+    }
+
+    private void settleGestureRoundness() {
+        animateRadius(mRestingRadius, RADIUS_SETTLE_MS);
+    }
+
+    private void animateRadius(float target, long durationMs) {
+        if (mRadiusAnim != null) {
+            ValueAnimator running = mRadiusAnim;
+            mRadiusAnim = null;
+            running.cancel();
+        }
+        if (durationMs <= 0L || mRadius == target) {
+            mRadius = target;
+            invalidate();
+            return;
+        }
+        ValueAnimator created = ValueAnimator.ofFloat(mRadius, target);
+        created.setDuration(durationMs);
+        created.setInterpolator(Interpolators.EMPHASIZED_DECELERATE);
+        created.addUpdateListener(anim -> {
+            mRadius = (Float) anim.getAnimatedValue();
+            invalidate();
+        });
+        created.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (mRadiusAnim == created) {
+                    mRadiusAnim = null;
+                }
+            }
+        });
+        mRadiusAnim = created;
+        created.start();
     }
 
     public void setReconfigureVisible(boolean visible) {
@@ -262,6 +326,11 @@ public class WidgetResizeFrame extends View {
             mRevealAnim.cancel();
             mRevealAnim = null;
         }
+        if (mRadiusAnim != null) {
+            mRadiusAnim.cancel();
+            mRadiusAnim = null;
+        }
+        mRadius = mRestingRadius;
         mRevealAlpha = 1f;
         invalidate();
     }
@@ -387,6 +456,8 @@ public class WidgetResizeFrame extends View {
                             ev.getX(pointerIndex) - mDownX,
                             ev.getY(pointerIndex) - mDownY);
                 }
+                setGestureRoundness(ev.getX(pointerIndex) - mDownX,
+                        ev.getY(pointerIndex) - mDownY);
                 return true;
             }
             if (mDownButton != 0) {
@@ -441,6 +512,7 @@ public class WidgetResizeFrame extends View {
         mActiveEdges = 0;
         mActivePointerId = MotionEvent.INVALID_POINTER_ID;
         requestParentDisallow(false);
+        settleGestureRoundness();
         if (mListener != null) {
             mListener.onBorderUp(edges, commit);
         }

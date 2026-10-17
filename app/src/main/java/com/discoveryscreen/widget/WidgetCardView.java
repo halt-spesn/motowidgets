@@ -3,6 +3,7 @@ package com.discoveryscreen.widget;
 import android.content.Context;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
@@ -27,6 +28,7 @@ public class WidgetCardView extends LinearLayout {
     private static final long LIFT_DURATION_MS = 150L;
     private static final float LIFT_SCALE = 1.03f;
     private static final float DRAG_ELEVATION_DP = 30f;
+    private static final float MAX_GESTURE_VELOCITY_DP = 2400f;
     private float mDownRawY;
     private float mDownRawX;
     private boolean mLongPressFired;
@@ -51,6 +53,14 @@ public class WidgetCardView extends LinearLayout {
     private static final float TAP_SCALE = 0.968f;
     private static final float TAP_BASE_ELEVATION_DP = 4f;
     private static final float TAP_SINK_DP = 2f;
+
+    private final ViewStateAnimator mState = new ViewStateAnimator(this);
+    /** Finger travel since the drag started, on top of the card's position at that moment. */
+    private float mRawDragX;
+    private float mRawDragY;
+    private VelocityTracker mVelocityTracker;
+    private float mReleaseVelocityX;
+    private float mReleaseVelocityY;
 
     public WidgetCardView(Context context) {
         super(context);
@@ -92,14 +102,14 @@ public class WidgetCardView extends LinearLayout {
         mDragging = false;
         mDragNotified = false;
         cancelLongPressPulse();
-        animate().cancel();
+        mState.cancel();
+        recycleVelocityTracker();
         setScaleX(1f);
         setScaleY(1f);
         setTranslationX(0f);
         setTranslationY(0f);
         setTranslationZ(0f);
-        setElevation(mTapMotionEnabled
-                ? TAP_BASE_ELEVATION_DP * getResources().getDisplayMetrics().density : 0f);
+        setElevation(baseElevationPx());
         super.onDetachedFromWindow();
     }
 
@@ -111,7 +121,7 @@ public class WidgetCardView extends LinearLayout {
     public void setTapMotionEnabled(boolean enabled) {
         mTapMotionEnabled = enabled;
         if (enabled) {
-            setElevation(TAP_BASE_ELEVATION_DP * getResources().getDisplayMetrics().density);
+            setElevation(baseElevationPx());
         } else {
             resetTapMotion();
             setTranslationZ(0f);
@@ -173,6 +183,58 @@ public class WidgetCardView extends LinearLayout {
         return Math.max(1, getWidth());
     }
 
+    /**
+     * Springs the card from its current translation/scale to its laid-out position, seeded with
+     * the velocity the finger let go at so a flick carries into the settle instead of stopping.
+     */
+    public void settleStateHome(float velocityX, float velocityY, Runnable onUpdate) {
+        mState.translationX(0f).translationY(0f).scaleX(1f)
+                .withUpdateAction(onUpdate)
+                .withEndAction(this::resetStateScalePivot)
+                .springTo(SpringConfig.SNAP_BACK, velocityX, velocityY);
+    }
+
+    /**
+     * Stops a settle-to-home that is still in flight, leaving the card where it is. Only the
+     * translation is dropped: its scale and depth belong to the gesture drive that follows.
+     */
+    public void cancelSettleAnimation() {
+        mState.cancel(ViewStateAnimator.TRANSLATION_X, ViewStateAnimator.TRANSLATION_Y);
+    }
+
+    /** Cancels the scale component when a timed grid reflow takes ownership of scaleX. */
+    public void cancelSettleScaleAnimation() {
+        mState.cancel(ViewStateAnimator.SCALE_X);
+    }
+
+    /**
+     * Release velocity of the last finger drag, px/s, handed over once: the settle that follows
+     * the drop is the only animation that may use it.
+     */
+    public boolean takeReleaseVelocity(float[] out) {
+        float x = mReleaseVelocityX;
+        float y = mReleaseVelocityY;
+        mReleaseVelocityX = 0f;
+        mReleaseVelocityY = 0f;
+        if (x == 0f && y == 0f) {
+            return false;
+        }
+        if (out != null && out.length >= 2) {
+            out[0] = x;
+            out[1] = y;
+        }
+        return true;
+    }
+
+    private void resetStateScalePivot() {
+        setPivotX(getWidth() / 2f);
+    }
+
+    private float baseElevationPx() {
+        return mTapMotionEnabled
+                ? TAP_BASE_ELEVATION_DP * getResources().getDisplayMetrics().density : 0f;
+    }
+
     private WidgetGridLayout gridParent() {
         if (getParent() instanceof WidgetGridLayout) {
             return (WidgetGridLayout) getParent();
@@ -218,7 +280,10 @@ public class WidgetCardView extends LinearLayout {
             scroll.scrollBy(0, step);
             int scrollDelta = scroll.getScrollY() - oldScrollY;
             if (scrollDelta != 0) {
-                setTranslationY(getTranslationY() + scrollDelta);
+                // The content moved under the finger, so the raw drag offset has to move with it
+                // for the card to stay anchored; the applied translation follows from that.
+                mRawDragY += scrollDelta;
+                applyDragTranslation();
                 updateDropTarget();
                 postOnAnimation(this);
                 mAutoScrollPosted = true;
@@ -249,6 +314,9 @@ public class WidgetCardView extends LinearLayout {
             mStealing = false;
             mDropRow = -1;
             mDropCol = -1;
+            mRawDragX = 0f;
+            mRawDragY = 0f;
+            trackVelocity(ev);
             if (mTapMotionEnabled) animateTapPress();
         } else if (action == MotionEvent.ACTION_MOVE && mTapMotionActive) {
             float dx = ev.getRawX() - mDownRawX;
@@ -285,12 +353,14 @@ public class WidgetCardView extends LinearLayout {
                 mDropRow = -1;
                 mDropCol = -1;
                 requestDisallowInterceptTouchEvent(false);
+                recycleVelocityTracker();
             }
             return true;
         }
         boolean handled = super.dispatchTouchEvent(ev);
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             resetTapMotion();
+            recycleVelocityTracker();
         }
         return handled;
     }
@@ -298,39 +368,27 @@ public class WidgetCardView extends LinearLayout {
     /** A small source-card response accompanies widget taps while Android opens their target. */
     private void animateTapPress() {
         final int generation = ++mGestureAnimationGeneration;
-        animate().cancel();
         mTapMotionActive = true;
-        animate().scaleX(TAP_SCALE).scaleY(TAP_SCALE)
-                .translationZ(-TAP_SINK_DP * getResources().getDisplayMetrics().density)
-                .setDuration(165L)
-                .setInterpolator(Interpolators.ACCELERATE_DECELERATE)
+        float density = getResources().getDisplayMetrics().density;
+        mState.scale(TAP_SCALE).translationZ(-TAP_SINK_DP * density)
                 .withEndAction(() -> {
                     if (!mTapMotionActive || generation != mGestureAnimationGeneration) return;
-                    animate().scaleX(0.974f).scaleY(0.974f)
-                            .translationZ(-1.2f * getResources().getDisplayMetrics().density)
-                            .setDuration(90L)
-                            .setInterpolator(Interpolators.EMPHASIZED_DECELERATE)
-                            .start();
+                    mState.scale(0.974f).translationZ(-1.2f * density)
+                            .animateTo(90L, Interpolators.EMPHASIZED_DECELERATE);
                 })
-                .start();
+                .animateTo(165L, Interpolators.ACCELERATE_DECELERATE);
     }
 
     private void resetTapMotion() {
         if (!mTapMotionActive) return;
         final int generation = ++mGestureAnimationGeneration;
         mTapMotionActive = false;
-        animate().cancel();
-        animate().scaleX(1.008f).scaleY(1.008f).translationZ(0f)
-                .setDuration(210L)
-                .setInterpolator(Interpolators.EMPHASIZED_DECELERATE)
+        mState.scale(1.008f).translationZ(0f)
                 .withEndAction(() -> {
                     if (generation != mGestureAnimationGeneration) return;
-                    animate().scaleX(1f).scaleY(1f)
-                            .setDuration(135L)
-                            .setInterpolator(Interpolators.DECELERATE_1_5)
-                            .start();
+                    mState.scale(1f).animateTo(135L, Interpolators.DECELERATE_1_5);
                 })
-                .start();
+                .animateTo(210L, Interpolators.EMPHASIZED_DECELERATE);
     }
 
     /** Give a recognized long press a subtle lift before showing widget controls. */
@@ -338,26 +396,19 @@ public class WidgetCardView extends LinearLayout {
         final int generation = ++mGestureAnimationGeneration;
         mLongPressLiftActive = true;
         cancelLongPressPulse();
-        animate().cancel();
-        animate().scaleX(1.026f).scaleY(1.026f)
-                .translationZ(9f * getResources().getDisplayMetrics().density)
-                .setDuration(230L)
-                .setInterpolator(Interpolators.EMPHASIZED_DECELERATE)
+        mState.scale(1.026f).translationZ(9f * getResources().getDisplayMetrics().density)
                 .withEndAction(() -> {
                     if (!mLongPressLiftActive || generation != mGestureAnimationGeneration) return;
-                    animate().scaleX(1.018f).scaleY(1.018f)
-                            .translationZ(8f * getResources().getDisplayMetrics().density)
-                            .setDuration(155L)
-                            .setInterpolator(Interpolators.DECELERATE_1_5)
+                    mState.scale(1.018f).translationZ(8f * getResources().getDisplayMetrics().density)
                             .withEndAction(() -> {
                                 if (mLongPressLiftActive
                                         && generation == mGestureAnimationGeneration) {
                                     startLongPressPulse();
                                 }
                             })
-                            .start();
+                            .animateTo(155L, Interpolators.DECELERATE_1_5);
                 })
-                .start();
+                .animateTo(230L, Interpolators.EMPHASIZED_DECELERATE);
     }
 
     private void startLongPressPulse() {
@@ -373,9 +424,13 @@ public class WidgetCardView extends LinearLayout {
             if (!mLongPressLiftActive || generation != mGestureAnimationGeneration) return;
             float pulse = (float) animator.getAnimatedValue();
             float scale = 1.018f + pulse * 0.003f;
+            float z = (8f + pulse * 0.5f) * density;
+            // Written straight through, but the animator keeps the same targets so a later drive
+            // or snap starts from where the pulse left the card.
+            mState.scale(scale).translationZ(z);
             setScaleX(scale);
             setScaleY(scale);
-            setTranslationZ((8f + pulse * 0.5f) * density);
+            setTranslationZ(z);
         });
         mLongPressPulse.start();
     }
@@ -392,18 +447,12 @@ public class WidgetCardView extends LinearLayout {
         final int generation = ++mGestureAnimationGeneration;
         mLongPressLiftActive = false;
         cancelLongPressPulse();
-        animate().cancel();
-        animate().scaleX(0.994f).scaleY(0.994f).translationZ(0f)
-                .setDuration(180L)
-                .setInterpolator(Interpolators.EMPHASIZED_DECELERATE)
+        mState.scale(0.994f).translationZ(0f)
                 .withEndAction(() -> {
                     if (generation != mGestureAnimationGeneration) return;
-                    animate().scaleX(1f).scaleY(1f)
-                            .setDuration(135L)
-                            .setInterpolator(Interpolators.DECELERATE_1_5)
-                            .start();
+                    mState.scale(1f).animateTo(135L, Interpolators.DECELERATE_1_5);
                 })
-                .start();
+                .animateTo(180L, Interpolators.EMPHASIZED_DECELERATE);
     }
 
     private void handleCardGesture(MotionEvent ev, int action) {
@@ -417,6 +466,7 @@ public class WidgetCardView extends LinearLayout {
                     bringToFront();
                     requestDisallowInterceptTouchEvent(true);
                     animateLift();
+                    beginDragVelocity();
                     notifyDragStarted();
                 }
             }
@@ -425,18 +475,30 @@ public class WidgetCardView extends LinearLayout {
                 float dx = ev.getRawX() - mLastRawX;
                 mLastRawY = ev.getRawY();
                 mLastRawX = ev.getRawX();
-                setTranslationY(getTranslationY() + dy);
-                setTranslationX(getTranslationX() + dx);
+                mRawDragX += dx;
+                mRawDragY += dy;
+                applyDragTranslation();
+                addDragVelocity(ev);
                 updateDropTarget();
                 mDragRawY = ev.getRawY();
                 scheduleAutoScroll();
             }
         } else if (action == MotionEvent.ACTION_UP) {
             if (mDragging) {
-                float dx = ev.getRawX() - mDownRawX;
-                float dy = ev.getRawY() - mDownRawY;
+                float dx = ev.getRawX() - mLastRawX;
+                float dy = ev.getRawY() - mLastRawY;
+                mLastRawX = ev.getRawX();
+                mLastRawY = ev.getRawY();
+                mRawDragX += dx;
+                mRawDragY += dy;
+                applyDragTranslation();
+                addDragVelocity(ev);
+                updateDropTarget();
+                recordReleaseVelocity();
+                float totalX = ev.getRawX() - mDownRawX;
+                float totalY = ev.getRawY() - mDownRawY;
                 float clickSlop = mTouchSlop * 2f;
-                if (dx * dx + dy * dy <= clickSlop * clickSlop) {
+                if (totalX * totalX + totalY * totalY <= clickSlop * clickSlop) {
                     cancelSmallDrag();
                     notifyOptionsRequested();
                 } else {
@@ -453,6 +515,91 @@ public class WidgetCardView extends LinearLayout {
         }
     }
 
+    /**
+     * Maps the finger's offset onto the grid, applying the drag band: inside it the card tracks
+     * the finger, past the left, right, or top edge it rubber-bands and saturates. The raw offset
+     * starts at the card's translation when the drag began, so a card caught mid-settle continues
+     * from where it is instead of jumping to its slot.
+     */
+    private void applyDragTranslation() {
+        WidgetGridLayout grid = gridParent();
+        if (grid == null) {
+            setTranslationX(mRawDragX);
+            setTranslationY(mRawDragY);
+            return;
+        }
+        float layoutLeft = getLeft();
+        float layoutTop = getTop();
+        float width = Math.max(1f, getWidth());
+        float height = Math.max(1f, getHeight());
+        setTranslationX(limitDragAxis(layoutLeft + mRawDragX, layoutLeft,
+                grid.dragLimitLeftPx(), grid.dragLimitRightPx(Math.round(width)), width));
+        setTranslationY(limitDragTop(layoutTop + mRawDragY, layoutTop,
+                grid.dragLimitTopPx(), height));
+    }
+
+    private static float limitDragAxis(float desired, float base, float min, float max,
+            float dimension) {
+        if (desired >= min && desired <= max) {
+            return desired - base;
+        }
+        float limited = desired < min ? min : max;
+        float pull = MotionMath.pullPastLimit(Math.abs(desired - limited), dimension);
+        return (desired < min ? limited - pull : limited + pull) - base;
+    }
+
+    /** Vertical drag resists only above the grid's first row; below it the shelf grows a row. */
+    private static float limitDragTop(float desired, float base, float min, float dimension) {
+        if (desired >= min) {
+            return desired - base;
+        }
+        return (min - MotionMath.pullPastLimit(min - desired, dimension)) - base;
+    }
+
+    private void trackVelocity(MotionEvent ev) {
+        recycleVelocityTracker();
+        mVelocityTracker = VelocityTracker.obtain();
+        mVelocityTracker.addMovement(ev);
+        mReleaseVelocityX = 0f;
+        mReleaseVelocityY = 0f;
+    }
+
+    /** Start velocity tracking in the card's translated coordinate space. */
+    private void beginDragVelocity() {
+        recycleVelocityTracker();
+        mVelocityTracker = VelocityTracker.obtain();
+        mReleaseVelocityX = 0f;
+        mReleaseVelocityY = 0f;
+    }
+
+    /** Track rendered translation so rubber-banding is reflected in the release speed. */
+    private void addDragVelocity(MotionEvent ev) {
+        if (mVelocityTracker == null) {
+            return;
+        }
+        MotionEvent translated = MotionEvent.obtain(ev);
+        translated.setLocation(getTranslationX(), getTranslationY());
+        mVelocityTracker.addMovement(translated);
+        translated.recycle();
+    }
+
+    private void recordReleaseVelocity() {
+        if (mVelocityTracker == null) {
+            return;
+        }
+        float max = MAX_GESTURE_VELOCITY_DP * getResources().getDisplayMetrics().density;
+        mVelocityTracker.computeCurrentVelocity(1000, max);
+        mReleaseVelocityX = mVelocityTracker.getXVelocity();
+        mReleaseVelocityY = mVelocityTracker.getYVelocity();
+    }
+
+    private void recycleVelocityTracker() {
+        if (mVelocityTracker != null) {
+            mVelocityTracker.recycle();
+            mVelocityTracker = null;
+        }
+    }
+
     private void notifyOptionsRequested() {
         if (mOptionsRequested) return;
         mOptionsRequested = true;
@@ -463,32 +610,37 @@ public class WidgetCardView extends LinearLayout {
         }
     }
 
-    /** Pick-up "lift": 150ms scale up + 30dp elevation (Launcher3 DragView). */
+    /**
+     * Pick-up "lift": 150ms scale up + 30dp elevation (Launcher3 DragView). The elevation is
+     * carried as translationZ on top of the card's base elevation, so the lift animates the
+     * delta from whatever the tap motion left the card at instead of snapping to a new depth.
+     */
     private void animateLift() {
         ++mGestureAnimationGeneration;
         mTapMotionActive = false;
         mLongPressLiftActive = false;
         cancelLongPressPulse();
-        setTranslationZ(0f);
-        setElevation(DRAG_ELEVATION_DP * getResources().getDisplayMetrics().density);
-        animate().cancel();
-        animate().scaleX(LIFT_SCALE).scaleY(LIFT_SCALE)
-                .setDuration(LIFT_DURATION_MS)
-                .setInterpolator(Interpolators.DECELERATE_1_5)
-                .start();
+        setPivotX(getWidth() / 2f);
+        // The finger takes over the card's translation from wherever it is right now.
+        mRawDragX = getTranslationX();
+        mRawDragY = getTranslationY();
+        mState.scale(LIFT_SCALE).translationZ(liftTranslationZPx())
+                .animateTo(LIFT_DURATION_MS, Interpolators.DECELERATE_1_5);
     }
 
-    /** Drop "settle": scale back to 1 and drop the elevation. */
+    private float liftTranslationZPx() {
+        // Base elevation stays put, so the shadow depth matches the old setElevation(30dp).
+        return (DRAG_ELEVATION_DP - (mTapMotionEnabled ? TAP_BASE_ELEVATION_DP : 0f))
+                * getResources().getDisplayMetrics().density;
+    }
+
+    /** Drop "settle": scale back to 1 and drop the lift. */
     private void animateSettle() {
         ++mGestureAnimationGeneration;
         mLongPressLiftActive = false;
         cancelLongPressPulse();
-        animate().cancel();
-        animate().scaleX(1f).scaleY(1f).translationZ(0f)
-                .setDuration(LIFT_DURATION_MS)
-                .setInterpolator(Interpolators.DECELERATE_1_5)
-                .start();
-        setElevation(0f);
+        mState.scale(1f).translationZ(0f)
+                .animateTo(LIFT_DURATION_MS, Interpolators.DECELERATE_1_5);
     }
 
     private void updateDropTarget() {
@@ -566,6 +718,8 @@ public class WidgetCardView extends LinearLayout {
         if (grid != null) {
             grid.clearDropTarget();
         }
+        mRawDragX = 0f;
+        mRawDragY = 0f;
         setTranslationX(0f);
         setTranslationY(0f);
         animateSettle();
@@ -578,5 +732,7 @@ public class WidgetCardView extends LinearLayout {
         mLongPressFired = false;
         mDropRow = -1;
         mDropCol = -1;
+        mReleaseVelocityX = 0f;
+        mReleaseVelocityY = 0f;
     }
 }

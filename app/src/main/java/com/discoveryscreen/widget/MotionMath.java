@@ -1,7 +1,39 @@
 package com.discoveryscreen.widget;
 
 public final class MotionMath {
+    /**
+     * The drag band saturates at 0.1 times the dragged element's dimension.
+     */
+    public static final float RUBBER_BAND_FACTOR_NORMAL = 0.1f;
+
     private MotionMath() {
+    }
+
+    /**
+     * Drag past a limit: the finger travels {@code excessPx} beyond the edge while the content
+     * follows the recorded exponential overshoot curve instead of tracking 1:1.
+     *
+     * @param dimensionPx the moving element's size along the drag axis; at {@code excessPx} equal
+     *                    to it the pull has saturated.
+     * @param maxPullPx   offset reached at saturation.
+     * @return visible offset past the limit, in {@code [0, maxPullPx]}.
+     */
+    public static float pullPastLimit(float excessPx, float dimensionPx, float maxPullPx) {
+        if (excessPx <= 0.0f) {
+            return 0.0f;
+        }
+        if (dimensionPx <= 0.0f) {
+            throw new IllegalArgumentException("Drag dimension must be positive");
+        }
+        return overshootInterpolation(clamp01(excessPx / dimensionPx), 1.0f) * maxPullPx;
+    }
+
+    public static float pullPastLimit(float excessPx, float dimensionPx) {
+        return pullPastLimit(excessPx, dimensionPx, RUBBER_BAND_FACTOR_NORMAL * dimensionPx);
+    }
+
+    public static float lerp(float from, float to, float fraction) {
+        return from + (to - from) * fraction;
     }
 
     /** @throws IllegalArgumentException if {@code upperBound} is below {@code lowerBound} */
