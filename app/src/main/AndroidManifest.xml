@@ -3,8 +3,8 @@
     package="com.discoveryscreen">
 
     <uses-sdk
-        android:minSdkVersion="26"
-        android:targetSdkVersion="34" />
+        android:minSdkVersion="30"
+        android:targetSdkVersion="36" />
 
     <uses-permission android:name="android.permission.BIND_APPWIDGET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -32,6 +32,17 @@
                 <action android:name="com.evie.screen.EvieApiService" />
             </intent-filter>
         </service>
+
+        <activity
+            android:name=".ui.WidgetPickerActivity"
+            android:exported="false"
+            android:label="Widgets" />
+
+        <activity
+            android:name=".ui.WidgetAddActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.WidgetAddTrampoline" />
 
         <activity
             android:name=".ui.MainActivity"

@@ -4,9 +4,10 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-BUILD_TOOLS="/opt/android-sdk/build-tools/36.0.0"
-PLATFORM="/opt/android-sdk/platforms/android-37.0/android.jar"
-OUTPUT_APK="/home/hallt/widgettest/app-debug.apk"
+SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/opt/android-sdk}}"
+BUILD_TOOLS="$SDK_ROOT/build-tools/36.0.0"
+PLATFORM="$SDK_ROOT/platforms/android-36/android.jar"
+OUTPUT_APK="$PROJECT_DIR/build/app-debug.apk"
 
 echo "=== Building MotoWidgetShelf ==="
 echo "Build tools: $BUILD_TOOLS"
@@ -32,7 +33,7 @@ echo "3. Compiling Java sources with javac..."
 javac -cp "$PLATFORM" -d build/classes -source 17 -target 17 $(find app/src/main/java build/gen -name "*.java")
 
 echo "4. Converting bytecode to DEX with d8..."
-"$BUILD_TOOLS/d8" --output build/dex --lib "$PLATFORM" $(find build/classes -name "*.class")
+"$BUILD_TOOLS/d8" --output build/dex --min-api 30 --lib "$PLATFORM" $(find build/classes -name "*.class")
 
 echo "5. Adding DEX into APK package..."
 (cd build/dex && zip -u ../app-unaligned.apk classes.dex)
