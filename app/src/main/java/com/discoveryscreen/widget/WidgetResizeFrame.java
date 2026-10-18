@@ -28,6 +28,10 @@ public class WidgetResizeFrame extends View {
 
     public static final int BUTTON_RECONFIGURE = 1;
     public static final int BUTTON_REMOVE = 2;
+    public static final int BUTTON_MOVE_UP = 3;
+    public static final int BUTTON_MOVE_DOWN = 4;
+    public static final int BUTTON_HEIGHT = 5;
+    public static final int BUTTON_COMPACT = 6;
 
     public static final int PRESET_SMALL = 0;
     public static final int PRESET_MEDIUM = 1;
@@ -60,6 +64,14 @@ public class WidgetResizeFrame extends View {
     private final RectF mBtnReconfigure = new RectF();
     private final RectF mBtnRemove = new RectF();
     private final RectF mBtnRemoveTouch = new RectF();
+    private final RectF mBtnUp = new RectF();
+    private final RectF mBtnDown = new RectF();
+    private final RectF mBtnHeight = new RectF();
+    private final RectF mBtnCompact = new RectF();
+    private boolean mCanMoveUp;
+    private boolean mCanMoveDown;
+    private String mHeightLabel = "Auto";
+    private boolean mCompactActions;
     private boolean mHasTarget;
     private boolean mHasReconfigure;
     private int mAccent = 0xFF0A84FF;
@@ -280,8 +292,56 @@ public class WidgetResizeFrame extends View {
         mBtnRemoveTouch.set(mBtnRemove.left - touchInset, mBtnRemove.top - touchInset,
                 mBtnRemove.right + touchInset, mBtnRemove.bottom + touchInset);
         layoutPresets();
+        layoutExtraActions();
         mHasTarget = true;
         invalidate();
+    }
+
+    /**
+     * Updates the reorder/height controls baked into the frame. {@code heightDp}
+     * uses 0 for "auto".
+     */
+    public void setActionState(boolean canMoveUp, boolean canMoveDown, int heightDp) {
+        mCanMoveUp = canMoveUp;
+        mCanMoveDown = canMoveDown;
+        String label = heightDp <= 0 ? "Auto" : heightDp + " dp";
+        if (!label.equals(mHeightLabel)) {
+            mHeightLabel = label;
+        }
+        layoutExtraActions();
+        invalidate();
+    }
+
+    private void layoutExtraActions() {
+        if (mWidget.isEmpty()) {
+            mBtnUp.setEmpty();
+            mBtnDown.setEmpty();
+            mBtnHeight.setEmpty();
+            mBtnCompact.setEmpty();
+            return;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        float gap = 7f * density;
+        float left = mWidget.left + mBtnMargin;
+        float top = mWidget.bottom - mBtnMargin - mBtnSize;
+        // Full-width widgets have room for all three controls; half-width ones
+        // fall back to a single "more" button that opens the action sheet.
+        mCompactActions = mWidget.width() < 270f * density;
+        if (mCompactActions) {
+            mBtnUp.setEmpty();
+            mBtnDown.setEmpty();
+            mBtnHeight.setEmpty();
+            mBtnCompact.set(left, top, left + mBtnSize, top + mBtnSize);
+        } else {
+            mBtnCompact.setEmpty();
+            mBtnUp.set(left, top, left + mBtnSize, top + mBtnSize);
+            float downLeft = mBtnUp.right + gap;
+            mBtnDown.set(downLeft, top, downLeft + mBtnSize, top + mBtnSize);
+            float textWidth = mPresetTextPaint.measureText(mHeightLabel);
+            float width = Math.max(mBtnSize, textWidth + 26f * density);
+            float heightLeft = mBtnDown.right + gap;
+            mBtnHeight.set(heightLeft, top, heightLeft + width, top + mBtnSize);
+        }
     }
 
     private void layoutPresets() {
@@ -395,10 +455,34 @@ public class WidgetResizeFrame extends View {
         if (mHasReconfigure && mBtnReconfigure.contains(x, y)) {
             return BUTTON_RECONFIGURE;
         }
-        if (mBtnRemoveTouch.contains(x, y)) {
+        if (expandedContains(mBtnRemoveTouch, x, y)) {
             return BUTTON_REMOVE;
         }
+        if (mCompactActions) {
+            if (expandedContains(mBtnCompact, x, y)) {
+                return BUTTON_COMPACT;
+            }
+        } else {
+            if (mCanMoveUp && expandedContains(mBtnUp, x, y)) {
+                return BUTTON_MOVE_UP;
+            }
+            if (mCanMoveDown && expandedContains(mBtnDown, x, y)) {
+                return BUTTON_MOVE_DOWN;
+            }
+            if (expandedContains(mBtnHeight, x, y)) {
+                return BUTTON_HEIGHT;
+            }
+        }
         return 0;
+    }
+
+    private boolean expandedContains(RectF rect, float x, float y) {
+        if (rect.isEmpty()) {
+            return false;
+        }
+        float pad = 4f * getResources().getDisplayMetrics().density;
+        return x >= rect.left - pad && x <= rect.right + pad
+                && y >= rect.top - pad && y <= rect.bottom + pad;
     }
 
     @Override
@@ -571,9 +655,68 @@ public class WidgetResizeFrame extends View {
         if (mHasPresets) {
             drawPresets(canvas);
         }
+        drawExtraActions(canvas);
         if (layer >= 0) {
             canvas.restoreToCount(layer);
         }
+    }
+
+    private void drawExtraActions(Canvas canvas) {
+        float density = getResources().getDisplayMetrics().density;
+        if (mCompactActions) {
+            drawActionPill(canvas, mBtnCompact, true);
+            float cx = mBtnCompact.centerX();
+            float cy = mBtnCompact.centerY();
+            float r = 1.9f * density;
+            float step = 5.5f * density;
+            canvas.drawCircle(cx - step, cy, r, mBtnIconPaint);
+            canvas.drawCircle(cx, cy, r, mBtnIconPaint);
+            canvas.drawCircle(cx + step, cy, r, mBtnIconPaint);
+            return;
+        }
+        drawActionPill(canvas, mBtnUp, mCanMoveUp);
+        drawChevron(canvas, mBtnUp, true, mCanMoveUp);
+        drawActionPill(canvas, mBtnDown, mCanMoveDown);
+        drawChevron(canvas, mBtnDown, false, mCanMoveDown);
+
+        drawActionPill(canvas, mBtnHeight, true);
+        Paint.Align previousAlign = mPresetTextPaint.getTextAlign();
+        mPresetTextPaint.setTextAlign(Paint.Align.LEFT);
+        float textX = mBtnHeight.left + 10f * density;
+        float textY = mBtnHeight.centerY()
+                - (mPresetTextPaint.descent() + mPresetTextPaint.ascent()) / 2f;
+        canvas.drawText(mHeightLabel, textX, textY, mPresetTextPaint);
+        mPresetTextPaint.setTextAlign(previousAlign);
+        float chevronX = mBtnHeight.right - 11f * density;
+        float chevronY = mBtnHeight.centerY();
+        float d = 3.2f * density;
+        canvas.drawLine(chevronX - d, chevronY - d, chevronX, chevronY + d * 0.4f, mLinePaint);
+        canvas.drawLine(chevronX, chevronY + d * 0.4f, chevronX + d, chevronY - d, mLinePaint);
+    }
+
+    private void drawActionPill(Canvas canvas, RectF rect, boolean enabled) {
+        if (rect.isEmpty()) {
+            return;
+        }
+        int previousAlpha = mPresetPaint.getAlpha();
+        mPresetPaint.setAlpha(enabled ? 255 : 90);
+        canvas.drawRoundRect(rect, mBtnCorner, mBtnCorner, mPresetPaint);
+        mPresetPaint.setAlpha(previousAlpha);
+    }
+
+    private void drawChevron(Canvas canvas, RectF rect, boolean up, boolean enabled) {
+        float density = getResources().getDisplayMetrics().density;
+        float cx = rect.centerX();
+        float cy = rect.centerY();
+        float d = 5.5f * density;
+        float rise = 3.2f * density;
+        int previousColor = mLinePaint.getColor();
+        mLinePaint.setColor(enabled ? 0xFFFFFFFF : 0x66FFFFFF);
+        float tipY = up ? cy - rise : cy + rise;
+        float tailY = up ? cy + rise * 0.7f : cy - rise * 0.7f;
+        canvas.drawLine(cx - d, tailY, cx, tipY, mLinePaint);
+        canvas.drawLine(cx, tipY, cx + d, tailY, mLinePaint);
+        mLinePaint.setColor(previousColor);
     }
 
     private void drawPresets(Canvas canvas) {

@@ -37,6 +37,25 @@ public class RoundedAppWidgetHostView extends AppWidgetHostView {
         }
     };
 
+    /**
+     * The RemoteViews root is a separate ViewGroup; clipping the host alone does
+     * not always round a full-bleed background that the root draws itself, so
+     * the root gets its own rounded outline too.
+     */
+    private final ViewOutlineProvider mWidgetRootOutline = new ViewOutlineProvider() {
+        @Override
+        public void getOutline(View view, Outline outline) {
+            if (mEnforcedCornerRadius <= 0f
+                    || view.getWidth() <= 0 || view.getHeight() <= 0) {
+                outline.setEmpty();
+                return;
+            }
+            float radius = Math.min(mEnforcedCornerRadius,
+                    Math.min(view.getWidth(), view.getHeight()) / 2f);
+            outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radius);
+        }
+    };
+
     private final float mEnforcedCornerRadius;
     private final Rect mEnforcedRectangle = new Rect();
     private final int mTouchSlop;
@@ -136,6 +155,13 @@ public class RoundedAppWidgetHostView extends AppWidgetHostView {
     private void resetRoundedCorners() {
         setOutlineProvider(VIEW_OUTLINE_PROVIDER);
         mIsCornerRadiusEnforced = false;
+        if (getChildCount() > 0) {
+            View root = getChildAt(0);
+            if (root != null) {
+                root.setClipToOutline(false);
+                root.setOutlineProvider(null);
+            }
+        }
     }
 
     private void enforceRoundedCorners() {
@@ -150,9 +176,31 @@ public class RoundedAppWidgetHostView extends AppWidgetHostView {
             return;
         }
         RoundedCornerEnforcement.computeRoundedRectangle(this, background, mEnforcedRectangle);
+        // Some widgets (for example YouTube Music) tag a small child such as
+        // the album art with android.R.id.background. Clipping the host to that
+        // child's bounds hides the rest of the widget, so only trust the
+        // background rectangle when it actually covers the widget surface.
+        if (mEnforcedRectangle.width() < getWidth() * 0.9f
+                || mEnforcedRectangle.height() < getHeight() * 0.9f) {
+            mEnforcedRectangle.set(0, 0, getWidth(), getHeight());
+        }
         setOutlineProvider(mCornerRadiusEnforcementOutline);
         mIsCornerRadiusEnforced = true;
         invalidateOutline();
+        clipWidgetRoot();
+    }
+
+    private void clipWidgetRoot() {
+        if (getChildCount() == 0) {
+            return;
+        }
+        View root = getChildAt(0);
+        if (root == null) {
+            return;
+        }
+        root.setOutlineProvider(mWidgetRootOutline);
+        root.setClipToOutline(true);
+        root.invalidateOutline();
     }
 
     public float getEnforcedCornerRadius() {

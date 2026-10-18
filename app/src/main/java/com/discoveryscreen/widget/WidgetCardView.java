@@ -88,6 +88,9 @@ public class WidgetCardView extends LinearLayout {
             requestDisallowInterceptTouchEvent(true);
             return true;
         });
+        // The platform default (500ms) times 0.75 felt too eager; give the
+        // finger a little more time before the edit chrome appears.
+        mLongPressHelper.setLongPressTimeoutFactor(1.2f);
     }
 
     @Override

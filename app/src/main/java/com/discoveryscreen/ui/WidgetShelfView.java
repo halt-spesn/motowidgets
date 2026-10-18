@@ -78,6 +78,7 @@ public class WidgetShelfView extends FrameLayout {
     private View mShelfContentRoot;
     private Button mBtnEdit;
     private View mAddWidgetButton;
+    private View mAddFab;
     private ScrollView mShelfScrollView;
     private int mPendingScrollRestoreY = -1;
     private WidgetPickerSheet mWidgetPickerSheet;
@@ -186,15 +187,18 @@ public class WidgetShelfView extends FrameLayout {
         if (widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
             mPendingEntranceWidgetId = widgetId;
         }
-        reloadWidgets(true);
-        if (mWidgetPickerSheet != null) {
-            mWidgetPickerSheet.showAnimated();
-            mWidgetPickerSheet.bringToFront();
+        // Return to the shelf after the add flow instead of reopening the
+        // picker. Adding another widget is still one tap away via "Add".
+        if (mWidgetPickerSheet != null
+                && mWidgetPickerSheet.getVisibility() == View.VISIBLE) {
+            mWidgetPickerSheet.dismiss();
         }
+        reloadWidgets(true);
     }
 
     public void prepareForShelfClose() {
         persistGridState();
+        if (mAddFab != null) mAddFab.setVisibility(View.GONE);
         boolean wasEditing = mIsEditMode;
         mIsEditMode = false;
         if (mBtnEdit != null) mBtnEdit.setText("Edit");
@@ -436,17 +440,10 @@ public class WidgetShelfView extends FrameLayout {
 
         if (btnPlaceholderAdd != null) btnPlaceholderAdd.setOnClickListener(addListener);
 
-        if (mBtnEdit != null) {
-            mBtnEdit.setOnClickListener(v -> {
-                if (gridCards().isEmpty()) {
-                    showWidgetPicker();
-                    return;
-                }
-                mIsEditMode = !mIsEditMode;
-                animateEditButtonLabel(mIsEditMode ? "Done" : "Edit");
-                reloadWidgets(true);
-            });
-        }
+        // The header (and its Edit toggle) is gone: widgets are always directly
+        // editable by long-pressing them, and this floating button keeps "add"
+        // one tap away.
+        createAddFab(context);
 
         if (mWidgetsContainer != null) {
             mWidgetsContainer.setLongClickable(true);
@@ -478,26 +475,77 @@ public class WidgetShelfView extends FrameLayout {
     private void adjustScrollPaddingForCutout(View root) {
         int scrollId = getResources().getIdentifier("shelf_scroll", "id", getContext().getPackageName());
         View scrollView = root.findViewById(scrollId);
-        int headerId = getResources().getIdentifier("shelf_header", "id", getContext().getPackageName());
-        int statusBarHeight = getStatusBarHeight();
-        int headerTop = Math.max(statusBarHeight + dpToPx(getContext(), 8),
-                dpToPx(getContext(), 16));
-        View header = root.findViewById(headerId);
-        if (header != null && header.getLayoutParams() instanceof FrameLayout.LayoutParams) {
-            FrameLayout.LayoutParams lp =
-                    (FrameLayout.LayoutParams) header.getLayoutParams();
-            lp.topMargin = headerTop;
-            header.setLayoutParams(lp);
+        if (scrollView == null) {
+            return;
         }
-        if (scrollView != null) {
-            int padTop = headerTop + dpToPx(getContext(), 68);
-            scrollView.setPadding(
-                scrollView.getPaddingLeft(),
-                padTop,
-                scrollView.getPaddingRight(),
-                scrollView.getPaddingBottom()
-            );
-        }
+        // No header any more: start just below the status bar, and leave room at
+        // the bottom for the floating add button.
+        int padTop = Math.max(getStatusBarHeight() + dpToPx(getContext(), 12),
+                dpToPx(getContext(), 24));
+        scrollView.setPadding(
+            scrollView.getPaddingLeft(),
+            padTop,
+            scrollView.getPaddingRight(),
+            dpToPx(getContext(), 96)
+        );
+    }
+
+    /**
+     * Always-visible replacement for the old header "Add" affordance. Edit
+     * controls now live directly on the widget (long-press), so the shelf has
+     * no chrome of its own apart from this button.
+     */
+    private void createAddFab(Context context) {
+        int size = dpToPx(context, 56);
+        ImageView fab = new ImageView(context);
+        fab.setImageResource(R.drawable.ic_add);
+        fab.setScaleType(ImageView.ScaleType.CENTER);
+        int iconPad = dpToPx(context, 16);
+        fab.setPadding(iconPad, iconPad, iconPad, iconPad);
+        fab.setBackground(addFabBackground(context));
+        fab.setElevation(dpToPx(context, 8));
+        fab.setClickable(true);
+        fab.setFocusable(true);
+        fab.setContentDescription("Add widgets");
+        fab.setOnClickListener(v -> showWidgetPicker());
+        // Only shown while a widget is being edited (i.e. the long-press
+        // chrome is up), matching the old edit-mode-only affordance.
+        fab.setVisibility(View.GONE);
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                size, size, Gravity.BOTTOM | Gravity.END);
+        lp.rightMargin = dpToPx(context, 24);
+        lp.bottomMargin = dpToPx(context, 32);
+        mAddFab = fab;
+        addView(fab, lp);
+
+        setOnApplyWindowInsetsListener((view, insets) -> {
+            if (mAddFab == null) {
+                return insets;
+            }
+            int bottom = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    ? insets.getInsets(android.view.WindowInsets.Type.systemBars()
+                            | android.view.WindowInsets.Type.displayCutout()).bottom
+                    : insets.getSystemWindowInsetBottom();
+            FrameLayout.LayoutParams params =
+                    (FrameLayout.LayoutParams) mAddFab.getLayoutParams();
+            int wanted = dpToPx(context, 24) + Math.max(bottom, dpToPx(context, 8));
+            if (params.bottomMargin != wanted) {
+                params.bottomMargin = wanted;
+                mAddFab.setLayoutParams(params);
+            }
+            return insets;
+        });
+    }
+
+    private android.graphics.drawable.Drawable addFabBackground(Context context) {
+        GradientDrawable fill = new GradientDrawable();
+        fill.setShape(GradientDrawable.OVAL);
+        fill.setColor(MonetColors.getAccentColor(context));
+        GradientDrawable mask = new GradientDrawable();
+        mask.setShape(GradientDrawable.OVAL);
+        mask.setColor(Color.WHITE);
+        return new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), fill, mask);
     }
 
     private int getStatusBarHeight() {
@@ -525,6 +573,9 @@ public class WidgetShelfView extends FrameLayout {
         }
         if (mWidgetsContainer instanceof WidgetGridLayout) {
             ((WidgetGridLayout) mWidgetsContainer).setAccentColor(accentColor);
+        }
+        if (mAddFab != null) {
+            mAddFab.setBackground(addFabBackground(context));
         }
     }
 
@@ -1010,88 +1061,6 @@ public class WidgetShelfView extends FrameLayout {
         cardParams.setMargins(0, 0, 0, 0);
         card.setLayoutParams(cardParams);
 
-        if (editMode) {
-            LinearLayout editBar = new LinearLayout(context);
-            editBar.setOrientation(LinearLayout.HORIZONTAL);
-            editBar.setGravity(Gravity.CENTER_VERTICAL);
-            editBar.setBackground(createFrostedSurface(context));
-            editBar.setElevation(dpToPx(context, 2));
-            editBar.setPadding(dpToPx(context, 5), 0, dpToPx(context, 5), 0);
-
-            LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(context, 44)
-            );
-            barParams.setMargins(0, 0, 0, dpToPx(context, 10));
-            editBar.setLayoutParams(barParams);
-
-            if (gridSpan == 1) {
-                View more = editIconAction(context,
-                        new int[]{R.drawable.ic_widget_action_more}, "Widget actions",
-                        Color.WHITE, Color.TRANSPARENT);
-                editBar.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-                more.setOnClickListener(v -> showCompactWidgetActions(v, pos, total, widgetId));
-                editBar.addView(more, new LinearLayout.LayoutParams(dpToPx(context, 36),
-                        dpToPx(context, 36)));
-            } else if (gridSpan == 2) {
-                int moveAccent = MonetColors.getAccentColor(context);
-                View move = editIconAction(context,
-                        new int[]{R.drawable.ic_widget_action_up, R.drawable.ic_widget_action_down},
-                        "Move widget", moveAccent, withAlpha(moveAccent, 0x24));
-                move.setOnClickListener(v -> showMoveWidgetMenu(v,
-                        WidgetStorage.getWidgetIds(context).indexOf(widgetId),
-                        WidgetStorage.getWidgetIds(context).size()));
-                LinearLayout.LayoutParams moveParams = new LinearLayout.LayoutParams(
-                        dpToPx(context, 36), dpToPx(context, 36));
-                moveParams.rightMargin = dpToPx(context, 4);
-                editBar.addView(move, moveParams);
-                editBar.addView(sizeAction(context, heightDp, widgetId),
-                        new LinearLayout.LayoutParams(0, dpToPx(context, 36), 1f));
-                LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(
-                        dpToPx(context, 36), dpToPx(context, 36));
-                removeParams.leftMargin = dpToPx(context, 4);
-                editBar.addView(removeAction(context, widgetId), removeParams);
-            } else {
-                int moveAccent = MonetColors.getAccentColor(context);
-                View btnUp = editIconAction(context,
-                        new int[]{R.drawable.ic_widget_action_up}, "Move widget up",
-                        pos > 0 ? moveAccent : withAlpha(moveAccent, 0x80),
-                        withAlpha(moveAccent, pos > 0 ? 0x24 : 0x0C));
-                btnUp.setEnabled(pos > 0);
-                btnUp.setOnClickListener(v -> moveWidget(pos, pos - 1));
-                LinearLayout.LayoutParams upParams = new LinearLayout.LayoutParams(
-                        dpToPx(context, 36), dpToPx(context, 36));
-                upParams.rightMargin = dpToPx(context, 4);
-                editBar.addView(btnUp, upParams);
-
-                View btnDown = editIconAction(context,
-                        new int[]{R.drawable.ic_widget_action_down}, "Move widget down",
-                        pos < total - 1 ? moveAccent : withAlpha(moveAccent, 0x80),
-                        withAlpha(moveAccent, pos < total - 1 ? 0x24 : 0x0C));
-                btnDown.setEnabled(pos < total - 1);
-                btnDown.setOnClickListener(v -> moveWidget(pos, pos + 1));
-                LinearLayout.LayoutParams downParams = new LinearLayout.LayoutParams(
-                        dpToPx(context, 36), dpToPx(context, 36));
-                downParams.rightMargin = dpToPx(context, 4);
-                editBar.addView(btnDown, downParams);
-
-                View divider = new View(context);
-                divider.setBackgroundColor(0x24FFFFFF);
-                LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(
-                        dpToPx(context, 1), dpToPx(context, 20));
-                dividerLp.setMargins(dpToPx(context, 4), 0, dpToPx(context, 8), 0);
-                editBar.addView(divider, dividerLp);
-                editBar.addView(sizeAction(context, heightDp, widgetId),
-                        new LinearLayout.LayoutParams(0, dpToPx(context, 36), 1f));
-                LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(
-                        dpToPx(context, 36), dpToPx(context, 36));
-                deleteLp.leftMargin = dpToPx(context, 4);
-                editBar.addView(removeAction(context, widgetId), deleteLp);
-            }
-
-            card.addView(editBar);
-        }
-
         try {
             long c0 = SystemClock.uptimeMillis();
             AppWidgetHostView hostView = mAppWidgetHost.createView(context, widgetId, info);
@@ -1148,100 +1117,6 @@ public class WidgetShelfView extends FrameLayout {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
-    private View editIconAction(Context context, int[] iconIds, String description,
-                                int tint, int fillColor) {
-        FrameLayout action = new FrameLayout(context);
-        action.setContentDescription(description);
-        action.setClickable(true);
-        action.setFocusable(true);
-        GradientDrawable fill = new GradientDrawable();
-        fill.setColor(fillColor);
-        fill.setCornerRadius(dpToPx(context, 12));
-        GradientDrawable mask = new GradientDrawable();
-        mask.setColor(Color.WHITE);
-        mask.setCornerRadius(dpToPx(context, 12));
-        action.setBackground(new RippleDrawable(ColorStateList.valueOf(0x30FFFFFF), fill, mask));
-
-        LinearLayout icons = new LinearLayout(context);
-        icons.setOrientation(LinearLayout.HORIZONTAL);
-        icons.setGravity(Gravity.CENTER);
-        for (int iconId : iconIds) {
-            ImageView icon = new ImageView(context);
-            icon.setImageResource(iconId);
-            icon.setImageTintList(ColorStateList.valueOf(tint));
-            icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(
-                    dpToPx(context, iconIds.length == 1 ? 20 : 14),
-                    dpToPx(context, iconIds.length == 1 ? 20 : 14));
-            if (iconIds.length > 1 && icons.getChildCount() > 0) {
-                iconParams.leftMargin = dpToPx(context, 3);
-            }
-            icons.addView(icon, iconParams);
-        }
-        action.addView(icons, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        return action;
-    }
-
-    private GradientDrawable createFrostedSurface(Context context) {
-        GradientDrawable surface = new GradientDrawable();
-        surface.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
-        surface.setColors(new int[]{0xC42E2F38, 0xAE202127});
-        surface.setCornerRadius(dpToPx(context, 18));
-        surface.setStroke(dpToPx(context, 1), 0x32FFFFFF);
-        return surface;
-    }
-
-    private View sizeAction(Context context, int heightDp, int widgetId) {
-        int accent = MonetColors.getAccentColor(context);
-        LinearLayout action = new LinearLayout(context);
-        action.setOrientation(LinearLayout.HORIZONTAL);
-        action.setGravity(Gravity.CENTER);
-        action.setContentDescription("Change widget height");
-        action.setClickable(true);
-        action.setFocusable(true);
-        GradientDrawable fill = new GradientDrawable();
-        fill.setColor(withAlpha(accent, 0x24));
-        fill.setCornerRadius(dpToPx(context, 12));
-        GradientDrawable mask = new GradientDrawable();
-        mask.setColor(Color.WHITE);
-        mask.setCornerRadius(dpToPx(context, 12));
-        action.setBackground(new RippleDrawable(ColorStateList.valueOf(0x30FFFFFF), fill, mask));
-        action.setPadding(dpToPx(context, 8), 0, dpToPx(context, 8), 0);
-
-        ImageView resizeIcon = new ImageView(context);
-        resizeIcon.setImageResource(R.drawable.ic_widget_action_resize);
-        resizeIcon.setImageTintList(ColorStateList.valueOf(accent));
-        resizeIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        action.addView(resizeIcon, new LinearLayout.LayoutParams(dpToPx(context, 16),
-                dpToPx(context, 16)));
-
-        TextView label = new TextView(context);
-        label.setText(heightDp <= 0 ? "Auto  ⌄" : heightDp + " dp  ⌄");
-        label.setTextColor(accent);
-        label.setTextSize(12);
-        label.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        label.setSingleLine(true);
-        label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        labelParams.leftMargin = dpToPx(context, 5);
-        action.addView(label, labelParams);
-        action.setOnClickListener(v -> {
-            WidgetStorage.cycleWidgetHeight(getContext(), widgetId);
-            reloadWidgets(true);
-        });
-        return action;
-    }
-
-    private View removeAction(Context context, int widgetId) {
-        View action = editIconAction(context,
-                new int[]{R.drawable.ic_widget_action_remove}, "Remove widget",
-                Color.rgb(255, 105, 97), 0x28FF453A);
-        action.setOnClickListener(v -> animateWidgetRemoval(widgetId));
-        return action;
-    }
-
     private void animateWidgetRemoval(int widgetId) {
         if (!mWidgetsBeingRemoved.add(widgetId)) return;
         WidgetCardView target = null;
@@ -1295,47 +1170,13 @@ public class WidgetShelfView extends FrameLayout {
         sortCardsByGrid();
         refreshReorderActions();
         animatePendingReorder(origins);
+        if (mSelectedCard != null) {
+            repositionResizeFrameAfterLayout();
+        }
     }
 
     private void refreshReorderActions() {
-        List<WidgetCardView> cards = gridCards();
-        int total = cards.size();
-        int accent = MonetColors.getAccentColor(getContext());
-        for (int pos = 0; pos < total; pos++) {
-            WidgetCardView card = cards.get(pos);
-            for (int i = 0; i < card.getChildCount(); i++) {
-                View child = card.getChildAt(i);
-                if (!(child instanceof LinearLayout)) continue;
-                LinearLayout bar = (LinearLayout) child;
-                for (int j = 0; j < bar.getChildCount(); j++) {
-                    View action = bar.getChildAt(j);
-                    CharSequence description = action.getContentDescription();
-                    if (description == null) continue;
-                    boolean up = "Move widget up".contentEquals(description);
-                    boolean down = "Move widget down".contentEquals(description);
-                    if (!up && !down) continue;
-                    boolean enabled = up ? pos > 0 : pos < total - 1;
-                    action.setEnabled(enabled);
-                    int tint = enabled ? accent : withAlpha(accent, 0x80);
-                    if (action instanceof ViewGroup) {
-                        ViewGroup group = (ViewGroup) action;
-                        if (group.getChildCount() > 0 && group.getChildAt(0) instanceof LinearLayout) {
-                            LinearLayout icons = (LinearLayout) group.getChildAt(0);
-                            if (icons.getChildCount() > 0 && icons.getChildAt(0) instanceof ImageView) {
-                                ((ImageView) icons.getChildAt(0)).setImageTintList(
-                                        ColorStateList.valueOf(tint));
-                            }
-                        }
-                    }
-                    final int delta = up ? -1 : 1;
-                    action.setOnClickListener(v -> {
-                        int current = WidgetStorage.getWidgetIds(getContext())
-                                .indexOf(card.getWidgetId());
-                        moveWidget(current, current + delta);
-                    });
-                }
-            }
-        }
+        updateFrameActionState();
     }
 
     private void animatePendingReorder() {
@@ -1391,15 +1232,6 @@ public class WidgetShelfView extends FrameLayout {
                     }
                 });
         scrollView.requestLayout();
-    }
-
-    private void showMoveWidgetMenu(View anchor, int pos, int total) {
-        showWidgetActionSheet(anchor, new int[]{R.drawable.ic_widget_action_up,
-                        R.drawable.ic_widget_action_down},
-                new String[]{"Move up", "Move down"},
-                new String[]{"Move widget up", "Move widget down"},
-                new boolean[]{pos > 0, pos < total - 1},
-                new Runnable[]{() -> moveWidget(pos, pos - 1), () -> moveWidget(pos, pos + 1)});
     }
 
     private void showCompactWidgetActions(View anchor, int pos, int total, int widgetId) {
@@ -1581,7 +1413,7 @@ public class WidgetShelfView extends FrameLayout {
         public void onDragEnded(WidgetCardView card, int targetRow, int targetCol) {
             mCardGestureActive = false;
             if (targetRow >= 0 && targetCol >= 0) {
-                tryPlace(card, targetRow, targetCol, card.getGridSpanX(), true);
+                reorderCard(card, targetRow, targetCol);
                 pushWidgetSize(card);
             } else {
                 // Drag start brings the card above every child. If the release
@@ -1653,10 +1485,21 @@ public class WidgetShelfView extends FrameLayout {
             if (mSelectedCard == null) {
                 return;
             }
+            List<Integer> ids = WidgetStorage.getWidgetIds(getContext());
+            int pos = ids.indexOf(mSelectedCard.getWidgetId());
             if (button == WidgetResizeFrame.BUTTON_RECONFIGURE) {
                 launchConfigure(mSelectedCard.getWidgetId());
             } else if (button == WidgetResizeFrame.BUTTON_REMOVE) {
                 animateWidgetRemoval(mSelectedCard.getWidgetId());
+            } else if (button == WidgetResizeFrame.BUTTON_MOVE_UP) {
+                moveWidget(pos, pos - 1);
+            } else if (button == WidgetResizeFrame.BUTTON_MOVE_DOWN) {
+                moveWidget(pos, pos + 1);
+            } else if (button == WidgetResizeFrame.BUTTON_HEIGHT) {
+                cycleSelectedWidgetHeight();
+            } else if (button == WidgetResizeFrame.BUTTON_COMPACT) {
+                showCompactWidgetActions(mSelectedCard, pos, ids.size(),
+                        mSelectedCard.getWidgetId());
             }
         }
 
@@ -1673,6 +1516,12 @@ public class WidgetShelfView extends FrameLayout {
 
     private void selectCard(WidgetCardView card) {
         mSelectedCard = card;
+        // Long-press is the single entry point for editing: reorder, height,
+        // size presets, reconfigure and delete all live in the resize chrome.
+        updateFrameActionState();
+        if (mAddFab != null) {
+            mAddFab.setVisibility(View.VISIBLE);
+        }
         AppWidgetProviderInfo info = null;
         try {
             info = mAppWidgetManager.getAppWidgetInfo(card.getWidgetId());
@@ -1691,16 +1540,31 @@ public class WidgetShelfView extends FrameLayout {
         mResizeFrame.setResizableEdges(resizeEdges);
         mResizeFrame.setVisibility(View.VISIBLE);
         repositionResizeFrame();
+        repositionResizeFrameAfterLayout();
         mResizeFrame.revealChrome();
     }
 
     private void deselectCard() {
         clearResizeSnapGuide();
+        if (mAddFab != null) {
+            mAddFab.setVisibility(View.GONE);
+        }
         if (mResizeFrame != null) {
             mResizeFrame.setVisibility(View.GONE);
             mResizeFrame.clearTarget();
         }
         mSelectedCard = null;
+    }
+
+    private void updateFrameActionState() {
+        if (mResizeFrame == null || mSelectedCard == null) {
+            return;
+        }
+        List<Integer> ids = WidgetStorage.getWidgetIds(getContext());
+        int pos = ids.indexOf(mSelectedCard.getWidgetId());
+        int total = ids.size();
+        mResizeFrame.setActionState(pos > 0, pos >= 0 && pos < total - 1,
+                WidgetStorage.getWidgetHeightDp(getContext(), mSelectedCard.getWidgetId()));
     }
 
     private void repositionResizeFrame() {
@@ -2010,7 +1874,26 @@ public class WidgetShelfView extends FrameLayout {
         card.setGridPos(card.getGridRow(), col, span);
         tryPlace(card, card.getGridRow(), col, span);
         pushWidgetSize(card);
-        repositionResizeFrame();
+        updateFrameActionState();
+        repositionResizeFrameAfterLayout();
+    }
+
+    private void cycleSelectedWidgetHeight() {
+        if (mSelectedCard == null) {
+            return;
+        }
+        int widgetId = mSelectedCard.getWidgetId();
+        int next = WidgetStorage.cycleWidgetHeight(getContext(), widgetId);
+        synchronized (mPolicyLock) {
+            mCardCacheHeight.put(widgetId, next);
+        }
+        View host = mSelectedCard.getHostView();
+        setWidgetFrameHeight(host, next > 0
+                ? dpToPx(getContext(), next)
+                : ViewGroup.LayoutParams.WRAP_CONTENT, next > 0);
+        pushWidgetSize(mSelectedCard);
+        updateFrameActionState();
+        repositionResizeFrameAfterLayout();
     }
 
     private void revertLiveResize(WidgetCardView card) {
@@ -2324,6 +2207,91 @@ public class WidgetShelfView extends FrameLayout {
             }
         }
         return bestCol < 0 ? null : new int[]{bestCol};
+    }
+
+    /**
+     * Drag-and-drop reorder: insert {@code card} at the slot under the finger
+     * and repack the cards that follow in reading order. Previously a
+     * displaced card was sent to the nearest free row, which skipped every
+     * occupied row and dropped it at the very end of the shelf.
+     *
+     * <p>Columns and spans are preserved; only row indices are reassigned, so
+     * side-by-side widgets stay side by side and the whole shelf stays packed
+     * instead of leaving the dragged card's old row as a hole.</p>
+     */
+    private void reorderCard(WidgetCardView card, int targetRow, int targetCol) {
+        if (targetRow == card.getGridRow() && targetCol == card.getGridCellX()) {
+            // A tiny nudge inside its own slot: just settle back, do not repack.
+            sortCardsByGrid();
+            animateGridCardToHome(card);
+            return;
+        }
+        java.util.ArrayList<WidgetCardView> ordered = gridCards();
+        ordered.sort((a, b) -> a.getGridRow() != b.getGridRow()
+                ? a.getGridRow() - b.getGridRow()
+                : a.getGridCellX() - b.getGridCellX());
+        int fromIndex = ordered.indexOf(card);
+        if (fromIndex < 0) {
+            return;
+        }
+
+        // Cards other than the one being dragged, in their current visual order.
+        java.util.ArrayList<WidgetCardView> others = new java.util.ArrayList<>(ordered);
+        others.remove(card);
+
+        // Find the card currently occupying the drop slot, if any.
+        int occupantIndex = -1;
+        for (int i = 0; i < others.size(); i++) {
+            WidgetCardView other = others.get(i);
+            if (other.getGridRow() == targetRow
+                    && targetCol >= other.getGridCellX()
+                    && targetCol < other.getGridCellX() + other.getGridSpanX()) {
+                occupantIndex = i;
+                break;
+            }
+        }
+
+        int insertIndex;
+        if (occupantIndex >= 0) {
+            // Moving down inserts after the occupant (the occupant keeps its
+            // row and the dragged card takes the slot below it in the list);
+            // moving up inserts before it, so that occupant shifts down.
+            boolean movingDown = targetRow > card.getGridRow()
+                    || (targetRow == card.getGridRow()
+                        && targetCol > card.getGridCellX());
+            insertIndex = movingDown ? occupantIndex + 1 : occupantIndex;
+        } else {
+            // Empty drop area: insert before the first card below it.
+            insertIndex = others.size();
+            for (int i = 0; i < others.size(); i++) {
+                if (others.get(i).getGridRow() > targetRow) {
+                    insertIndex = i;
+                    break;
+                }
+            }
+        }
+        insertIndex = Math.max(0, Math.min(insertIndex, others.size()));
+        others.add(insertIndex, card);
+
+        // Repack rows in reading order, keeping each card's column and span.
+        // A card shares the current row when its columns are free, otherwise it
+        // moves to the next row, so neighbours shift by one slot rather than
+        // being pushed to the bottom.
+        java.util.HashMap<Integer, boolean[]> occupied = new java.util.HashMap<>();
+        int cursorRow = 0;
+        for (WidgetCardView c : others) {
+            int span = Math.max(1, Math.min(c.getGridSpanX(), WidgetGridLayout.GRID_COLUMNS));
+            int col = Math.max(0, Math.min(c.getGridCellX(),
+                    WidgetGridLayout.GRID_COLUMNS - span));
+            int row = cursorRow;
+            while (!gridFootprintFree(occupied, row, col, span)) {
+                row++;
+            }
+            c.setGridPos(row, col, span);
+            markGridCells(occupied, row, col, span);
+            cursorRow = row;
+        }
+        afterGridChange();
     }
 
     private boolean tryPlace(WidgetCardView card, int row, int col, int spanX) {

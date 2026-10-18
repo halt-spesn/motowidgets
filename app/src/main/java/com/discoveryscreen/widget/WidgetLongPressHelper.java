@@ -8,6 +8,12 @@ public class WidgetLongPressHelper {
     private final View mView;
     private final View.OnLongClickListener mListener;
     private final float mSlop;
+    /**
+     * Some OEMs (this one included) ship a 300ms long-press timeout, which
+     * makes the edit chrome appear almost instantly. Keep a floor so the hold
+     * always feels intentional regardless of the system setting.
+     */
+    private static final long MIN_LONG_PRESS_TIMEOUT_MS = 550L;
     private float mLongPressTimeoutFactor = 0.75f;
     private Runnable mPendingCheck;
     private boolean mHasPerformedLongPress;
@@ -29,7 +35,8 @@ public class WidgetLongPressHelper {
     }
 
     public long getLongPressTimeout() {
-        return (long) (ViewConfiguration.getLongPressTimeout() * mLongPressTimeoutFactor);
+        return Math.max(MIN_LONG_PRESS_TIMEOUT_MS,
+                (long) (ViewConfiguration.getLongPressTimeout() * mLongPressTimeoutFactor));
     }
 
     public boolean hasPerformedLongPress() {
