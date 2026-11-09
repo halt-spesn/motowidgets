@@ -30,12 +30,12 @@ public class WidgetGridLayout extends ViewGroup {
     // an in-flight animation toward that destination is not restarted per move.
     private final java.util.IdentityHashMap<WidgetCardView, float[]> mNudgeTargets =
             new java.util.IdentityHashMap<>();
-    /**
-     * Remembered content height per row index. Free placement keeps row indices
-     * stable (no compaction), so a row that has been emptied still contributes
-     * its previous height as a visible gap until something is dropped into it.
-     */
-    private final android.util.SparseIntArray mRowHeights = new android.util.SparseIntArray();
+    // Each column advances independently. A tall half-width widget must not
+    // reserve the space below its short neighbour in the other half.
+    private final android.util.SparseArray<int[]> mRowColumnHeights = new android.util.SparseArray<>();
+    private final android.util.SparseArray<int[]> mRowStarts = new android.util.SparseArray<>();
+    private final java.util.IdentityHashMap<View, Integer> mChildTops = new java.util.IdentityHashMap<>();
+    private int[] mColumnEnds = new int[GRID_COLUMNS];
 
     /** Layout params that also carry {@code android:layout_gravity}. */
     public static class GridLayoutParams extends MarginLayoutParams {
@@ -256,7 +256,7 @@ public class WidgetGridLayout extends ViewGroup {
         if (cell <= 0) {
             return 0;
         }
-        int c = (int) Math.floor((x + mGap / 2f) / (cell + mGap));
+        int c = (int) Math.floor((x - getPaddingLeft() + mGap / 2f) / (cell + mGap));
         return Math.max(0, Math.min(c, GRID_COLUMNS - 1));
     }
 
@@ -352,10 +352,10 @@ public class WidgetGridLayout extends ViewGroup {
         int col = 0;
         int cell = getCellWidthPx();
         if (cell > 0) {
-            col = (int) Math.floor((x + mGap / 2f) / (cell + mGap));
+            col = (int) Math.floor((x - getPaddingLeft() + mGap / 2f) / (cell + mGap));
             col = Math.max(0, Math.min(col, GRID_COLUMNS - spanX));
         }
-        return new int[]{rowForY(y), col};
+        return new int[]{rowForY(y, col, spanX), col};
     }
 
     /**
@@ -363,6 +363,10 @@ public class WidgetGridLayout extends ViewGroup {
      * droppable slots, so a widget can be put back into a gap it left behind.
      */
     public int rowForY(float y) {
+        return rowForY(y, 0, GRID_COLUMNS);
+    }
+
+    private int rowForY(float y, int col, int span) {
         java.util.TreeMap<Integer, java.util.ArrayList<View>> rows = rowMap();
         if (rows.isEmpty()) {
             return 0;
@@ -370,33 +374,55 @@ public class WidgetGridLayout extends ViewGroup {
         if (y < getPaddingTop()) {
             return 0;
         }
-        // Start from row 0 so a gap left above surviving widgets is preserved
-        // instead of letting the rows below snap up.
-        int index = 0;
         int last = rows.lastKey();
-        int top = getPaddingTop();
-        while (index <= last) {
-            int bottom = top + rowContentHeight(rows.get(index), index);
+        for (int index = 0; index <= last; index++) {
+            int bottom = rowTop(index, col, span);
+            java.util.ArrayList<View> row = rows.get(index);
+            if (row == null) {
+                int[] remembered = mRowColumnHeights.get(index);
+                int[] starts = mRowStarts.get(index);
+                if (remembered != null && starts != null) {
+                    for (int c = col; c < col + span; c++) {
+                        bottom = Math.max(bottom, starts[c] + Math.max(0, remembered[c] - mGap));
+                    }
+                }
+            } else {
+                for (View child : row) {
+                    int childCol = childColumn(child);
+                    if (childCol < col + span && col < childCol + childSpan(child)) {
+                        MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
+                        bottom = Math.max(bottom, childTop(child) + child.getMeasuredHeight() + lp.bottomMargin);
+                    }
+                }
+            }
             if (y <= bottom) {
                 return index;
             }
-            top = bottom + mGap;
-            index++;
         }
         return last + 1;
     }
 
-    /** Content height of a row: measured children, or the remembered gap. */
-    private int rowContentHeight(java.util.ArrayList<View> row, int index) {
-        if (row == null || row.isEmpty()) {
-            return Math.max(0, mRowHeights.get(index, 0));
+    private static int childSpan(View child) {
+        return child instanceof WidgetCardView ? ((WidgetCardView) child).getGridSpanX() : GRID_COLUMNS;
+    }
+
+    private static int childColumn(View child) {
+        return child instanceof WidgetCardView ? ((WidgetCardView) child).getGridCellX() : 0;
+    }
+
+    private int childTop(View child) {
+        Integer top = mChildTops.get(child);
+        return top != null ? top : child.getTop();
+    }
+
+    private int rowTop(int row, int col, int span) {
+        int[] starts = mRowStarts.get(row);
+        if (starts == null) starts = mColumnEnds;
+        int top = getPaddingTop();
+        for (int c = col; c < col + span; c++) {
+            top = Math.max(top, starts[c]);
         }
-        int h = 0;
-        for (View child : row) {
-            MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
-            h = Math.max(h, child.getMeasuredHeight() + lp.topMargin + lp.bottomMargin);
-        }
-        return h;
+        return top;
     }
 
     /**
@@ -445,121 +471,116 @@ public class WidgetGridLayout extends ViewGroup {
         int widthSize = MeasureSpec.getSize(widthMeasureSpec);
         int content = Math.max(0, widthSize - getPaddingLeft() - getPaddingRight());
         int cell = measureCellWidth(widthSize);
+        for (int i = 0; i < getChildCount(); i++) {
+            View child = getChildAt(i);
+            if (child.getVisibility() == GONE) continue;
+            MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
+            int widthSpec;
+            if (child instanceof WidgetCardView) {
+                int span = Math.max(1, Math.min(
+                        ((WidgetCardView) child).getGridSpanX(), GRID_COLUMNS));
+                int w = span >= GRID_COLUMNS ? content : span * cell + (span - 1) * mGap;
+                if (lp.width > 0) {
+                    // A live resize sets an explicit pixel width; that must win
+                    // until the snapped span is committed on touch-up.
+                    w = lp.width;
+                }
+                widthSpec = MeasureSpec.makeMeasureSpec(Math.max(0, w), MeasureSpec.EXACTLY);
+            } else if (lp.width == LayoutParams.MATCH_PARENT) {
+                widthSpec = MeasureSpec.makeMeasureSpec(
+                        Math.max(0, content - lp.leftMargin - lp.rightMargin),
+                        MeasureSpec.EXACTLY);
+            } else if (lp.width >= 0) {
+                widthSpec = MeasureSpec.makeMeasureSpec(lp.width, MeasureSpec.EXACTLY);
+            } else {
+                widthSpec = MeasureSpec.makeMeasureSpec(
+                        Math.max(0, content - lp.leftMargin - lp.rightMargin),
+                        MeasureSpec.AT_MOST);
+            }
+            int heightSpec;
+            if (lp.height >= 0) {
+                heightSpec = MeasureSpec.makeMeasureSpec(lp.height, MeasureSpec.EXACTLY);
+            } else {
+                heightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+            }
+            child.measure(widthSpec, heightSpec);
+        }
+        int total = computeChildTops();
+        setMeasuredDimension(widthSize, resolveSize(total, heightMeasureSpec));
+    }
+
+    /** Lay out in saved row order, using only the columns each child occupies. */
+    private int computeChildTops() {
         java.util.TreeMap<Integer, java.util.ArrayList<View>> rows = rowMap();
-        int y = getPaddingTop();
+        mChildTops.clear();
+        mRowStarts.clear();
+        int[] nextTop = new int[GRID_COLUMNS];
+        java.util.Arrays.fill(nextTop, getPaddingTop());
         if (!rows.isEmpty()) {
-            int last = rows.lastKey();
-            int index = 0;
-            while (index <= last) {
-                java.util.ArrayList<View> row = rows.get(index);
+            for (int rowIndex = 0; rowIndex <= rows.lastKey(); rowIndex++) {
+                int[] starts = nextTop.clone();
+                mRowStarts.put(rowIndex, starts);
+                java.util.ArrayList<View> row = rows.get(rowIndex);
                 if (row == null) {
-                    int remembered = mRowHeights.get(index, 0);
-                    if (remembered > 0) {
-                        y += remembered + mGap;
+                    // Preserve a deliberately emptied row in the columns it used.
+                    int[] remembered = mRowColumnHeights.get(rowIndex);
+                    if (remembered != null) {
+                        for (int c = 0; c < GRID_COLUMNS; c++) nextTop[c] += remembered[c];
                     }
-                    index++;
                     continue;
                 }
-                int rowHeight = 0;
                 for (View child : row) {
+                    int col = childColumn(child);
+                    int span = childSpan(child);
+                    int top = getPaddingTop();
+                    for (int c = col; c < col + span; c++) top = Math.max(top, nextTop[c]);
                     MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
-                    int widthSpec;
-                    if (child instanceof WidgetCardView) {
-                        int span = Math.max(1, Math.min(
-                                ((WidgetCardView) child).getGridSpanX(), GRID_COLUMNS));
-                        int w = span >= GRID_COLUMNS ? content : span * cell + (span - 1) * mGap;
-                        if (lp.width > 0) {
-                            // A live resize sets an explicit pixel width; that must win
-                            // until the snapped span is committed on touch-up.
-                            w = lp.width;
-                        }
-                        widthSpec = MeasureSpec.makeMeasureSpec(Math.max(0, w), MeasureSpec.EXACTLY);
-                    } else if (lp.width == LayoutParams.MATCH_PARENT) {
-                        widthSpec = MeasureSpec.makeMeasureSpec(
-                                Math.max(0, content - lp.leftMargin - lp.rightMargin),
-                                MeasureSpec.EXACTLY);
-                    } else if (lp.width >= 0) {
-                        widthSpec = MeasureSpec.makeMeasureSpec(lp.width, MeasureSpec.EXACTLY);
-                    } else {
-                        widthSpec = MeasureSpec.makeMeasureSpec(
-                                Math.max(0, content - lp.leftMargin - lp.rightMargin),
-                                MeasureSpec.AT_MOST);
-                    }
-                    int heightSpec;
-                    if (lp.height >= 0) {
-                        heightSpec = MeasureSpec.makeMeasureSpec(lp.height, MeasureSpec.EXACTLY);
-                    } else {
-                        heightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
-                    }
-                    child.measure(widthSpec, heightSpec);
-                    rowHeight = Math.max(rowHeight,
-                            child.getMeasuredHeight() + lp.topMargin + lp.bottomMargin);
+                    mChildTops.put(child, top + lp.topMargin);
+                    int bottom = top + lp.topMargin + child.getMeasuredHeight() + lp.bottomMargin + mGap;
+                    for (int c = col; c < col + span; c++) nextTop[c] = bottom;
                 }
-                mRowHeights.put(index, rowHeight);
-                y += rowHeight + mGap;
-                index++;
+                int[] consumed = new int[GRID_COLUMNS];
+                for (int c = 0; c < GRID_COLUMNS; c++) consumed[c] = nextTop[c] - starts[c];
+                mRowColumnHeights.put(rowIndex, consumed);
             }
         }
-        int total = rows.isEmpty()
-                ? getPaddingTop() + getPaddingBottom() : y - mGap + getPaddingBottom();
-        setMeasuredDimension(widthSize, resolveSize(total, heightMeasureSpec));
+        mColumnEnds = nextTop;
+        int bottom = getPaddingTop();
+        for (int end : nextTop) bottom = Math.max(bottom, end - mGap);
+        return bottom + getPaddingBottom();
     }
 
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         int content = Math.max(0, (r - l) - getPaddingLeft() - getPaddingRight());
         int cell = measureCellWidth(r - l);
-        java.util.TreeMap<Integer, java.util.ArrayList<View>> rows = rowMap();
-        int y = getPaddingTop();
-        if (rows.isEmpty()) {
-            return;
-        }
-        int last = rows.lastKey();
-        int index = 0;
-        while (index <= last) {
-            java.util.ArrayList<View> row = rows.get(index);
-            if (row == null) {
-                int remembered = mRowHeights.get(index, 0);
-                if (remembered > 0) {
-                    y += remembered + mGap;
-                }
-                index++;
-                continue;
-            }
-            int rowHeight = 0;
-            for (View child : row) {
-                MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
-                rowHeight = Math.max(rowHeight,
-                        child.getMeasuredHeight() + lp.topMargin + lp.bottomMargin);
-            }
-            for (View child : row) {
-                MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
-                int left;
-                if (child instanceof WidgetCardView) {
-                    WidgetCardView card = (WidgetCardView) child;
-                    int span = Math.max(1, Math.min(card.getGridSpanX(), GRID_COLUMNS));
-                    int col = Math.max(0, Math.min(card.getGridCellX(), GRID_COLUMNS - span));
-                    left = getPaddingLeft() + col * (cell + mGap) + lp.leftMargin;
+        computeChildTops();
+        for (int i = 0; i < getChildCount(); i++) {
+            View child = getChildAt(i);
+            if (child.getVisibility() == GONE) continue;
+            MarginLayoutParams lp = (MarginLayoutParams) child.getLayoutParams();
+            int left;
+            if (child instanceof WidgetCardView) {
+                WidgetCardView card = (WidgetCardView) child;
+                int span = Math.max(1, Math.min(card.getGridSpanX(), GRID_COLUMNS));
+                int col = Math.max(0, Math.min(card.getGridCellX(), GRID_COLUMNS - span));
+                left = getPaddingLeft() + col * (cell + mGap) + lp.leftMargin;
+            } else {
+                int available = Math.max(0, content - lp.leftMargin - lp.rightMargin);
+                int w = child.getMeasuredWidth();
+                int gravity = Gravity.getAbsoluteGravity(gravityOf(lp), getLayoutDirection())
+                        & Gravity.HORIZONTAL_GRAVITY_MASK;
+                if (gravity == Gravity.CENTER_HORIZONTAL) {
+                    left = getPaddingLeft() + lp.leftMargin + (available - w) / 2;
+                } else if (gravity == Gravity.RIGHT) {
+                    left = getPaddingLeft() + content - lp.rightMargin - w;
                 } else {
-                    int available = Math.max(0, content - lp.leftMargin - lp.rightMargin);
-                    int w = child.getMeasuredWidth();
-                    int gravity = Gravity.getAbsoluteGravity(gravityOf(lp), getLayoutDirection())
-                            & Gravity.HORIZONTAL_GRAVITY_MASK;
-                    if (gravity == Gravity.CENTER_HORIZONTAL) {
-                        left = getPaddingLeft() + lp.leftMargin + (available - w) / 2;
-                    } else if (gravity == Gravity.RIGHT) {
-                        left = getPaddingLeft() + content - lp.rightMargin - w;
-                    } else {
-                        left = getPaddingLeft() + lp.leftMargin;
-                    }
+                    left = getPaddingLeft() + lp.leftMargin;
                 }
-                int top = y + lp.topMargin;
-                child.layout(left, top, left + child.getMeasuredWidth(),
-                        top + child.getMeasuredHeight());
             }
-            mRowHeights.put(index, rowHeight);
-            y += rowHeight + mGap;
-            index++;
+            int top = childTop(child);
+            child.layout(left, top, left + child.getMeasuredWidth(),
+                    top + child.getMeasuredHeight());
         }
     }
 
@@ -587,44 +608,9 @@ public class WidgetGridLayout extends ViewGroup {
         float left = getPaddingLeft() + col * (cell + mGap);
         float right = left + span * cell + (span - 1) * mGap;
 
-        java.util.TreeMap<Integer, int[]> bands = cardRowBands();
-        float top;
-        float bottom;
-        int[] band = bands.get(mDropRow);
-        if (band != null) {
-            top = band[1];
-            bottom = band[2];
-        } else {
-            int lastRow = bands.isEmpty() ? -1 : bands.lastKey();
-            float lastBottom = bands.isEmpty()
-                    ? getPaddingTop() : bands.get(lastRow)[2];
-            if (mDropRow > lastRow) {
-                top = lastBottom + mGap;
-            } else {
-                Integer above = bands.floorKey(mDropRow);
-                top = above == null ? getPaddingTop() : bands.get(above)[2] + mGap;
-            }
-            bottom = top + Math.max(mDropHeight, cell);
-        }
+        float top = rowTop(mDropRow, col, span);
+        // Use the available top in these columns and the dragged card's own height.
+        float bottom = top + (mDropHeight > 0 ? mDropHeight : cell);
         return new RectF(left, top, right, bottom);
-    }
-
-    private java.util.TreeMap<Integer, int[]> cardRowBands() {
-        java.util.TreeMap<Integer, int[]> map = new java.util.TreeMap<>();
-        for (int i = 0; i < getChildCount(); i++) {
-            View child = getChildAt(i);
-            if (child.getVisibility() == GONE || !(child instanceof WidgetCardView)) {
-                continue;
-            }
-            int row = ((WidgetCardView) child).getGridRow();
-            int[] band = map.get(row);
-            if (band == null) {
-                map.put(row, new int[]{row, child.getTop(), child.getBottom()});
-            } else {
-                band[1] = Math.min(band[1], child.getTop());
-                band[2] = Math.max(band[2], child.getBottom());
-            }
-        }
-        return map;
     }
 }

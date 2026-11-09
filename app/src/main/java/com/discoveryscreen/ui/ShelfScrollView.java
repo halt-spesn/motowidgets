@@ -71,9 +71,10 @@ public class ShelfScrollView extends ScrollView {
                 mDownX = ev.getRawX();
                 mDownY = ev.getRawY();
                 mScrollableChildUnderTouch = findScrollableChildAt(this, mDownX, mDownY);
-                super.onInterceptTouchEvent(ev);
-                // Return false so child view receives ACTION_DOWN
-                return false;
+                // ScrollView intercepts DOWN during a fling so onTouchEvent
+                // aborts its scroller immediately. When stationary it returns
+                // false and the widget still receives the touch normally.
+                return super.onInterceptTouchEvent(ev);
 
             case MotionEvent.ACTION_MOVE:
                 if (mScrollableChildUnderTouch != null) {

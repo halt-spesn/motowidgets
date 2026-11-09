@@ -210,6 +210,7 @@ public class WidgetShelfView extends FrameLayout {
     }
 
     public void onShelfOpened() {
+        WidgetHostManager.activateHostViews(getContext(), mWidgetsContainer);
         if (!mNeedsReloadOnNextOpen) return;
         mNeedsReloadOnNextOpen = false;
         reloadWidgets(true);
@@ -630,7 +631,7 @@ public class WidgetShelfView extends FrameLayout {
                 return;
             }
             List<Integer> widgetIds = WidgetStorage.pruneStaleWidgets(context, storedIds, alive);
-            ensurePlacements(context, widgetIds);
+            ensurePlacements(context, widgetIds, infoById);
             Map<Integer, Integer> heightById = new HashMap<>();
             for (int id : widgetIds) {
                 heightById.put(id, WidgetStorage.getWidgetHeightDp(context, id));
@@ -1044,7 +1045,7 @@ public class WidgetShelfView extends FrameLayout {
         int[] placement = WidgetStorage.getPlacement(context, widgetId);
         int gridRow = 0;
         int gridCol = 0;
-        int gridSpan = WidgetGridLayout.GRID_COLUMNS;
+        int gridSpan = WidgetSizing.defaultSpanX(context, info);
         if (placement != null) {
             gridRow = placement[0];
             gridCol = placement[1];
@@ -1066,7 +1067,7 @@ public class WidgetShelfView extends FrameLayout {
             AppWidgetHostView hostView = mAppWidgetHost.createView(context, widgetId, info);
             long c1 = SystemClock.uptimeMillis();
 
-            int effectiveHeightDp = heightDp > 0 ? heightDp : (info.minHeight > 0 ? info.minHeight : 150);
+            int effectiveHeightDp = WidgetSizing.effectiveHeightDp(context, info, heightDp);
             int effectiveWidthDp = Math.round(spanWidthPx(context, gridSpan, screenWidthDp)
                     / context.getResources().getDisplayMetrics().density);
             try {
@@ -2036,7 +2037,8 @@ public class WidgetShelfView extends FrameLayout {
         repositionResizeFrame();
     }
 
-    private void ensurePlacements(Context context, List<Integer> widgetIds) {
+    private void ensurePlacements(Context context, List<Integer> widgetIds,
+                                  Map<Integer, AppWidgetProviderInfo> infoById) {
         // Seed occupancy in list order and resolve any collision, so a stale
         // pref that put two widgets on the same row cannot make them overlap.
         java.util.Map<Integer, boolean[]> occupied = new java.util.HashMap<>();
@@ -2045,7 +2047,7 @@ public class WidgetShelfView extends FrameLayout {
         for (int id : widgetIds) {
             int[] p = WidgetStorage.getPlacement(context, id);
             int span = p == null
-                    ? WidgetGridLayout.GRID_COLUMNS
+                    ? WidgetSizing.defaultSpanX(context, infoById.get(id))
                     : Math.max(1, Math.min(p[2], WidgetGridLayout.GRID_COLUMNS));
             int row = p == null ? nextRow : Math.max(0, p[0]);
             int col = p == null
@@ -2210,16 +2212,16 @@ public class WidgetShelfView extends FrameLayout {
     }
 
     /**
-     * Drag-and-drop reorder: insert {@code card} at the slot under the finger
-     * and repack the cards that follow in reading order. Previously a
-     * displaced card was sent to the nearest free row, which skipped every
-     * occupied row and dropped it at the very end of the shelf.
+     * Drop into a vacant footprint at the requested row and column. For an
+     * occupied footprint, insert the card in reading order and repack rows.
      *
-     * <p>Columns and spans are preserved; only row indices are reassigned, so
-     * side-by-side widgets stay side by side and the whole shelf stays packed
-     * instead of leaving the dragged card's old row as a hole.</p>
+     * <p>Keep each card's span and height, and the other cards' columns. Only
+     * the dragged card takes the requested column.</p>
      */
     private void reorderCard(WidgetCardView card, int targetRow, int targetCol) {
+        int spanX = card.getGridSpanX();
+        targetRow = Math.max(0, targetRow);
+        targetCol = Math.max(0, Math.min(targetCol, WidgetGridLayout.GRID_COLUMNS - spanX));
         if (targetRow == card.getGridRow() && targetCol == card.getGridCellX()) {
             // A tiny nudge inside its own slot: just settle back, do not repack.
             sortCardsByGrid();
@@ -2239,13 +2241,28 @@ public class WidgetShelfView extends FrameLayout {
         java.util.ArrayList<WidgetCardView> others = new java.util.ArrayList<>(ordered);
         others.remove(card);
 
+        // A vacant footprint is a placement, including beside another widget.
+        // Keep the dragged widget's own span and height and honour both coordinates.
+        boolean vacant = true;
+        for (WidgetCardView other : others) {
+            if (gridOverlaps(other.getGridRow(), other.getGridCellX(), other.getGridSpanX(),
+                    targetRow, targetCol, spanX)) {
+                vacant = false;
+                break;
+            }
+        }
+        if (vacant) {
+            card.setGridPos(targetRow, targetCol, spanX);
+            afterGridChange();
+            return;
+        }
+
         // Find the card currently occupying the drop slot, if any.
         int occupantIndex = -1;
         for (int i = 0; i < others.size(); i++) {
             WidgetCardView other = others.get(i);
-            if (other.getGridRow() == targetRow
-                    && targetCol >= other.getGridCellX()
-                    && targetCol < other.getGridCellX() + other.getGridSpanX()) {
+            if (gridOverlaps(other.getGridRow(), other.getGridCellX(), other.getGridSpanX(),
+                    targetRow, targetCol, spanX)) {
                 occupantIndex = i;
                 break;
             }
@@ -2281,7 +2298,7 @@ public class WidgetShelfView extends FrameLayout {
         int cursorRow = 0;
         for (WidgetCardView c : others) {
             int span = Math.max(1, Math.min(c.getGridSpanX(), WidgetGridLayout.GRID_COLUMNS));
-            int col = Math.max(0, Math.min(c.getGridCellX(),
+            int col = Math.max(0, Math.min(c == card ? targetCol : c.getGridCellX(),
                     WidgetGridLayout.GRID_COLUMNS - span));
             int row = cursorRow;
             while (!gridFootprintFree(occupied, row, col, span)) {
@@ -2599,6 +2616,7 @@ public class WidgetShelfView extends FrameLayout {
     }
 
     private void addCardChild(View child, int at) {
+        WidgetHostManager.activateHostViews(getContext(), child);
         // Never assume the view is detached: a reload can race with an
         // in-flight drag, so the card may still be attached.
         detachFromParent(child);

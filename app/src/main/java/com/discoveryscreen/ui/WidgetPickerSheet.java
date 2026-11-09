@@ -942,9 +942,9 @@ final class WidgetPickerSheet extends FrameLayout {
 
     private static int[] calculateWidgetSpans(AppWidgetProviderInfo info, float density,
                                                int widthPixels) {
-        // AppWidgetProviderInfo min sizes are already expressed in dp.
-        float widthDp = info.minWidth;
-        float heightDp = info.minHeight;
+        // AppWidgetManager resolves the provider's dimension resources to pixels.
+        float widthDp = info.minWidth / density;
+        float heightDp = info.minHeight / density;
         int screenWidthDp = Math.round(widthPixels / density);
         // Launcher grid width is device-specific. Use the common five-column profile as a
         // display estimate, rather than pretending every grid cell is a fixed 72dp.

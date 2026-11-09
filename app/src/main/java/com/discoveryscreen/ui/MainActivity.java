@@ -332,7 +332,7 @@ public class MainActivity extends Activity {
 
                 android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
                 int screenWidthDp = Math.max(280, (int) (dm.widthPixels / dm.density) - 48);
-                int effectiveHeightDp = heightDp > 0 ? heightDp : (info.minHeight > 0 ? info.minHeight : 150);
+                int effectiveHeightDp = WidgetSizing.effectiveHeightDp(this, info, heightDp);
                 try {
                     WidgetSizing.updateHostViewSize(this, widgetView, info,
                             screenWidthDp, effectiveHeightDp);
@@ -377,7 +377,10 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        dialog.setOnDismissListener(d -> shelfView.stopListening());
+        dialog.setOnDismissListener(d -> {
+            shelfView.stopListening();
+            WidgetHostManager.activateHostViews(this, mWidgetsPreviewContainer);
+        });
         dialog.show();
     }
 

@@ -653,11 +653,12 @@ public class WidgetCardView extends LinearLayout {
             mDropCol = -1;
             return;
         }
-        float cx = getLeft() + getTranslationX() + (float) getWidth() / 2f;
+        float left = getLeft() + getTranslationX();
         float cy = getTop() + getTranslationY() + (float) getHeight() / 2f;
-        mDropRow = grid.rowForY(cy);
-        mDropCol = grid.colForX(cx);
-        grid.setDropTarget(mDropRow, mDropCol, mGridSpanX, getHeight());
+        int[] target = grid.cellForPoint(left, cy, mGridSpanX);
+        mDropRow = target[0];
+        mDropCol = target[1];
+        grid.setDropTarget(mDropRow, mDropCol, mGridSpanX, getHeight(), this);
     }
 
     private ScrollView findScrollView() {

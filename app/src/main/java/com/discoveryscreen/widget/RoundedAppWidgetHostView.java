@@ -14,6 +14,7 @@ import android.widget.AdapterView;
 import android.widget.AdapterViewAnimator;
 import android.widget.HorizontalScrollView;
 import android.widget.ScrollView;
+import android.widget.RemoteViews;
 
 import java.util.concurrent.Executor;
 
@@ -80,6 +81,18 @@ public class RoundedAppWidgetHostView extends AppWidgetHostView {
         setClipToOutline(true);
         mEnforcedCornerRadius = RoundedCornerEnforcement.computeEnforcedRadius(context);
         mTouchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        WidgetHostManager.onHostViewAttached();
+    }
+
+    @Override
+    public void updateAppWidget(RemoteViews views) {
+        WidgetHostManager.onHostWidgetUpdate(this, views);
+        super.updateAppWidget(views);
     }
 
     @Override
